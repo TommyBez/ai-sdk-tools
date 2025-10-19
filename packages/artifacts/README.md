@@ -1,6 +1,6 @@
 # @ai-sdk-tools/artifacts
 
-Advanced streaming interfaces for AI applications. Create structured, type-safe artifacts that stream real-time updates from AI tools to React components.
+Advanced streaming interfaces for AI applications. Create structured, type-safe artifacts that stream real-time updates from AI SDK tools to React components.
 
 ## Features
 
@@ -25,7 +25,7 @@ The artifacts package uses the store package's `useChatMessages` hook to efficie
 
 ## Setup
 
-### 1. Initialize Chat with Store
+### 1) Initialize chat with `@ai-sdk-tools/store`
 
 ```tsx
 import { useChat } from '@ai-sdk-tools/store'; // Drop-in replacement for @ai-sdk/react
@@ -48,13 +48,13 @@ function ChatComponent() {
 }
 ```
 
-### 2. Use Artifacts from Any Component
+### 2) Use artifacts from any component
 
 The `useArtifact` hook automatically connects to the global chat store to extract artifact data from message streams - no prop drilling needed!
 
-## Quick Start
+## Quick start
 
-### 1. Define an Artifact
+### 1) Define an artifact
 
 ```typescript
 import { artifact } from '@ai-sdk-tools/artifacts';
@@ -72,34 +72,37 @@ const burnRateArtifact = artifact('burn-rate', z.object({
 }));
 ```
 
-### 2. Create a Tool with Context
+### 2) Create a tool and stream an artifact
 
-```typescript
-// Use direct AI SDK tool format
-const analyzeBurnRate = {
+Important: pass the AI SDK writer to `artifact.stream(data, writer)`. Inside a tool, use `getWriter(executionOptions)` to access the writer.
+
+```ts
+import { tool } from 'ai';
+import { z } from 'zod';
+import { artifact, getWriter } from '@ai-sdk-tools/artifacts';
+
+const burnRateArtifact = artifact('burn-rate', z.object({
+  title: z.string(),
+  stage: z.enum(['loading', 'processing', 'complete']).default('loading'),
+  monthlyBurn: z.number().optional(),
+  runway: z.number().optional(),
+  data: z.array(z.object({ month: z.string(), burnRate: z.number() })).default([])
+}));
+
+export const analyzeBurnRate = tool({
   description: 'Analyze company burn rate',
-  inputSchema: z.object({
-    company: z.string()
-  }),
-  execute: async ({ company }: { company: string }) => {
-    // Access typed context in tools
-    const context = getContext(); // Fully typed as MyContext
-    
-    console.log('Processing for user:', context.userId);
-    console.log('Theme:', context.config.theme);
-    
-    const analysis = burnRateArtifact.stream({
-      title: `${company} Analysis for ${context.userId}`,
-      stage: 'loading',
-      monthlyBurn: 50000,
-      runway: 12
-    });
+  inputSchema: z.object({ company: z.string() }),
+  execute: async ({ company }, executionOptions) => {
+    const writer = getWriter(executionOptions);
 
-    // Stream updates
-    analysis.progress = 0.5;
+    const analysis = burnRateArtifact.stream({
+      title: `${company} Analysis`,
+      stage: 'loading'
+    }, writer);
+
+    analysis.progress = 0.25;
     await analysis.update({ stage: 'processing' });
-    
-    // Complete
+
     await analysis.complete({
       title: `${company} Analysis`,
       stage: 'complete',
@@ -110,43 +113,28 @@ const analyzeBurnRate = {
 
     return 'Analysis complete';
   }
-};
+});
 ```
 
-### 3. Set Up Route with Context
+### 3) Set up the route and pass the writer
 
-```typescript
-import { createTypedContext, BaseContext } from '@ai-sdk-tools/artifacts';
+The writer must be forwarded via AI SDK's `experimental_context` so tools can stream artifacts.
+
+```ts
 import { createUIMessageStream, createUIMessageStreamResponse, streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
-
-// Define your context type
-interface MyContext extends BaseContext {
-  userId: string;
-  permissions: string[];
-  config: { theme: 'light' | 'dark' };
-}
-
-// Create typed context helpers
-const { setContext, getContext } = createTypedContext<MyContext>();
+import { analyzeBurnRate } from './tools/analyze-burn-rate';
 
 export const POST = async (req: Request) => {
   const { messages } = await req.json();
 
   const stream = createUIMessageStream({
     execute: ({ writer }) => {
-      // Set typed context
-      setContext({
-        writer,
-        userId: req.headers.get('user-id') || 'anonymous',
-        permissions: ['read', 'write'],
-        config: { theme: 'dark' }
-      });
-
       const result = streamText({
-        model: openai('gpt-4'),
+        model: openai('gpt-4o'),
         messages,
-        tools: { analyzeBurnRate }
+        tools: { analyzeBurnRate },
+        experimental_context: { writer } // ← essential for artifacts
       });
 
       writer.merge(result.toUIMessageStream());
@@ -157,7 +145,7 @@ export const POST = async (req: Request) => {
 };
 ```
 
-### 4. Consume in React
+### 4) Consume in React
 
 ```tsx
 import { useArtifact } from '@ai-sdk-tools/artifacts/client';
@@ -187,10 +175,17 @@ function Analysis() {
 }
 ```
 
-## API Reference
+## API reference
 
 ### `artifact(id, schema)`
 Creates an artifact definition with Zod schema validation.
+
+Returns an object with:
+- `id`, `schema`
+- `create(data?)` → `ArtifactData<T>`
+- `stream(data, writer)` → `StreamingArtifact<T>`
+- `validate(data)` → `T`
+- `isValid(data)` → `boolean`
 
 ### `useArtifact(artifact, callbacks?)`
 React hook for consuming a specific streaming artifact.
@@ -215,13 +210,17 @@ React hook for listening to all artifacts across all types. Perfect for implemen
 
 **Options:**
 - `onData(artifactType, data)` - Callback fired when any artifact updates
-- `storeId` - Optional store ID (defaults to global store)
+- `include?: string[]` - Only include these artifact types
+- `exclude?: string[]` - Exclude these artifact types
 
 **Returns:**
 - `byType` - All artifacts grouped by type: `Record<string, ArtifactData[]>`
 - `latest` - Latest version of each artifact type: `Record<string, ArtifactData>`
 - `artifacts` - All artifacts in chronological order: `ArtifactData[]`
 - `current` - Most recent artifact across all types: `ArtifactData | null`
+
+### `getWriter(executionOptions)`
+Helper to extract the AI SDK writer from `executionOptions.experimental_context` inside a tool.
 
 **Example:**
 ```tsx
@@ -267,9 +266,9 @@ function Canvas() {
 
 
 
-## Advanced Usage
+## Advanced usage
 
-### Combining Both Hooks
+### Combining both hooks
 
 You can use both hooks together for different purposes:
 
@@ -319,7 +318,7 @@ function DashboardWithAnalysis() {
 }
 ```
 
-### Hook Selection Guide
+### Hook selection guide
 
 **Use `useArtifact`** when:
 - You need to display/work with a specific artifact type
@@ -339,6 +338,21 @@ See the `src/examples/` directory for complete examples including:
 - React component integration  
 - Route setup and tool implementation
 - Using `useArtifacts` for multi-type artifact rendering
+
+## Server vs Client imports
+
+- Server (or tools/routes):
+  - `import { artifact, getWriter } from '@ai-sdk-tools/artifacts'`
+- Client (React components):
+  - `import { useArtifact, useArtifacts } from '@ai-sdk-tools/artifacts/client'`
+
+## Best practices
+
+- Always pass the writer to `artifact.stream(data, writer)`
+- Forward the writer via `experimental_context` in your route
+- Use Zod defaults to provide sensible initial payloads
+- Update `progress` either via `analysis.progress = x` or by passing `progress` to `update({...})`
+- Use `timeout(ms)` or `cancel()` when relevant
 
 ## Contributing
 
