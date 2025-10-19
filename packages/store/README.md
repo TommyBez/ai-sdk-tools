@@ -2,6 +2,12 @@
 
 A high-performance drop-in replacement for @ai-sdk/react with advanced state management, built-in optimizations, and zero configuration required.
 
+## Requirements
+
+- React >= 18
+- Zustand >= 5
+- @ai-sdk/react >= 2
+
 ## Performance Features
 
 - **3-5x faster** than standard @ai-sdk/react
@@ -58,6 +64,7 @@ function App() {
 
 ```tsx
 import { useChat, useChatMessages } from '@ai-sdk-tools/store';
+import { DefaultChatTransport } from 'ai';
 
 function ChatComponent() {
   // Same API as @ai-sdk/react, but 3-5x faster!
@@ -116,8 +123,7 @@ Cache expensive computations:
 function ChatAnalytics() {
   const userMessageCount = useSelector(
     'userMessages',
-    (messages) => messages.filter(m => m.role === 'user').length,
-    [messages.length] // Only recalculate when message count changes
+    (messages) => messages.filter((m) => m.role === 'user').length
   );
   
   return <div>User messages: {userMessageCount}</div>;
@@ -136,6 +142,32 @@ function MessageDetails({ messageId }: { messageId: string }) {
 }
 ```
 
+### Transient Data Parts
+Capture and consume structured, out-of-band updates that arrive during streaming via `onData` parts with types prefixed by `data-`.
+
+```tsx
+import { useDataParts, useDataPart } from '@ai-sdk-tools/store';
+
+// Read all latest data parts by type
+function Sidebar() {
+  const { byType } = useDataParts();
+  const agentStatus = byType['agent-status'];
+  return agentStatus ? <p>Status: {agentStatus.data.status}</p> : null;
+}
+
+// Read a specific data part with a clear function
+function RateLimitBanner() {
+  const [rateLimit, clearRateLimit] = useDataPart<{ remaining: number }>('rate-limit');
+  if (!rateLimit) return null;
+  return (
+    <div>
+      Remaining: {rateLimit.remaining}
+      <button onClick={clearRateLimit}>Dismiss</button>
+    </div>
+  );
+}
+```
+
 ## Migration from @ai-sdk/react
 
 ### Before:
@@ -151,6 +183,7 @@ function Chat() {
 ### After:
 ```tsx
 import { Provider, useChat } from '@ai-sdk-tools/store';
+import { DefaultChatTransport } from 'ai';
 
 function App() {
   return (
@@ -199,7 +232,22 @@ const result = useSelector(key, fn, deps) // Memoized selectors
 
 // Actions
 const actions = useChatActions()        // All actions object
+
+// Data parts
+const { byType, all } = useDataParts()  // Latest values by data-* type
+const [value, clear] = useDataPart('rate-limit') // Specific data part
+
+// Store access
+const store = useChatStoreApi()         // Access store API (Zustand vanilla)
+const state = useChatStore()            // Read full state
 ```
+
+#### useChat options
+
+`useChat` accepts all options from `@ai-sdk/react` plus:
+
+- `store?`: a compatible Zustand store to sync into (defaults to the context store created by `Provider`)
+- `enableBatching?` (default `true`): batch state syncs with `requestAnimationFrame` for fewer re-renders
 
 ### Provider
 
@@ -208,6 +256,18 @@ const actions = useChatActions()        // All actions object
   <YourApp />
 </Provider>
 ```
+
+### Debug utilities
+
+```ts
+import { configureDebug, debug } from '@ai-sdk-tools/store';
+
+// At app startup
+configureDebug({ enabled: true, level: 'warn' });
+debug.warn('Slow update detected');
+```
+
+You can also enable logging via the `DEBUG=true` environment variable.
 
 ## TypeScript Support
 
@@ -226,6 +286,11 @@ const chat = useChat<MyMessage>({
 })
 const messages = useChatMessages<MyMessage>() // Fully typed!
 ```
+
+## SSR and Hydration
+
+- `Provider` supports `initialMessages` for hydration-safe SSR.
+- On hydration, if the store already has server-rendered messages and the chat hook has none yet, the store will keep its messages to avoid flicker.
 
 ## Contributing
 
