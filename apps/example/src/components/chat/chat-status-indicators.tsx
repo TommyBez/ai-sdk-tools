@@ -9,29 +9,31 @@ import type { AgentStatus } from "@/types/agents";
 interface ChatStatusIndicatorsProps {
   agentStatus: AgentStatus | null;
   currentToolCall: string | null;
+  currentToolInput?: any;
   status?: string;
 }
 
 export function ChatStatusIndicators({
   agentStatus,
   currentToolCall,
+  currentToolInput,
   status,
 }: ChatStatusIndicatorsProps) {
   const statusMessage = getStatusMessage(agentStatus);
-  const toolMessage = getToolMessage(currentToolCall);
+  const toolMessage = getToolMessage(currentToolCall, currentToolInput);
 
-  // Prioritize tool message over agent status
+  // Always prioritize tool message over agent status when a tool is running
   const displayMessage = toolMessage || statusMessage;
 
-  // Get icon for current tool
+  // Get icon for current tool - always show icon when tool is running
   const toolIcon = currentToolCall ? getToolIcon(currentToolCall) : null;
 
   return (
-    <>
+    <div className="h-8 flex items-center">
       <AnimatedStatus
         text={displayMessage}
         shimmerDuration={0.75}
-        fadeDuration={0.2}
+        fadeDuration={0.1}
         variant="slide"
         className="text-xs font-normal"
         icon={toolIcon}
@@ -41,6 +43,6 @@ export function ChatStatusIndicators({
         (status === "submitted" && !agentStatus && !currentToolCall)) && (
         <Loader />
       )}
-    </>
+    </div>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useChatId } from "@ai-sdk-tools/store";
 import type { ChatStatus } from "ai";
 import { GlobeIcon } from "lucide-react";
 import { type RefObject, useEffect, useState } from "react";
@@ -26,6 +27,7 @@ import {
   PromptInputToolbar,
   PromptInputTools,
 } from "@/components/ai-elements/prompt-input";
+import { useChatInterface } from "@/hooks/use-chat-interface";
 
 export interface ChatInputMessage extends PromptInputMessage {
   agentChoice?: string;
@@ -64,8 +66,14 @@ function ChatInputInner({
   selection: CommandSelection;
 }) {
   const { clearPills } = useCommandActions();
+  const { setChatId } = useChatInterface();
+  const chatId = useChatId();
 
   const handleSubmit = (message: PromptInputMessage) => {
+    if (chatId) {
+      setChatId(chatId);
+    }
+
     // Merge message with command selection
     onSubmit({
       ...message,
@@ -82,7 +90,7 @@ function ChatInputInner({
       globalDrop
       multiple
       onSubmit={handleSubmit}
-      className="bg-white/80 dark:bg-black/80 backdrop-blur-xl border border-border"
+      className="bg-[#fafafa]/80 dark:bg-background/50 backdrop-blur-xl"
     >
       <PromptInputBody>
         <PromptInputAttachments>
@@ -96,8 +104,8 @@ function ChatInputInner({
             rateLimit?.code === "RATE_LIMIT_EXCEEDED"
               ? "Rate limit exceeded. Please try again tomorrow."
               : hasMessages
-                ? undefined
-                : "Ask me anything"
+                ? "Ask me anything (or use @agent or /tool)"
+                : "Ask me anything (or use @agent or /tool)"
           }
           disabled={rateLimit?.code === "RATE_LIMIT_EXCEEDED"}
           autoFocus

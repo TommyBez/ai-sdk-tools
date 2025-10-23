@@ -22,7 +22,8 @@ export async function POST(request: NextRequest) {
   }
 
   // Get only the last message from client
-  const { message, id, agentChoice, toolChoice } = await request.json();
+  const { message, id, agentChoice, toolChoice, timezone } =
+    await request.json();
 
   if (!message) {
     return new Response(JSON.stringify({ error: "No message provided" }), {
@@ -37,15 +38,17 @@ export async function POST(request: NextRequest) {
     userId,
     fullName: "John Doe",
     companyName: "Acme Inc.",
-    baseCurrency: "USD",
-    locale: "en-US",
-    timezone: "America/New_York",
-    country: "US",
-    city: "New York",
-    region: "New York",
+    baseCurrency: "SEK",
+    locale: "sv-SE",
+    timezone: timezone || "Europe/Stockholm",
+    country: "SE",
+    city: "Stockholm",
+    region: "Stockholm",
     chatId: id,
   });
 
+  // Pass user preferences to triage agent as context
+  // The triage agent will use this information to make better routing decisions
   return triageAgent.toUIMessageStream({
     message,
     strategy: "auto",
@@ -54,7 +57,9 @@ export async function POST(request: NextRequest) {
     context: appContext,
     agentChoice,
     toolChoice,
-    experimental_transform: smoothStream({ chunking: "word" }),
+    experimental_transform: smoothStream({
+      chunking: "word",
+    }),
     sendReasoning: true,
     sendSources: true,
   });

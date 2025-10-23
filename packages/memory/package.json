@@ -1,6 +1,6 @@
 {
   "name": "@ai-sdk-tools/memory",
-  "version": "0.1.2",
+  "version": "0.9.0",
   "description": "Persistent memory system for AI agents",
   "type": "module",
   "exports": {
@@ -8,6 +8,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./*": {
+      "types": "./dist/providers/*.d.ts",
+      "import": "./dist/providers/*.js",
+      "require": "./dist/providers/*.cjs"
     }
   },
   "files": [

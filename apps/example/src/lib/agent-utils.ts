@@ -8,10 +8,6 @@ export const getStatusMessage = (status?: AgentStatus | null) => {
 
   const { agent, status: state } = status;
 
-  console.log("status", status);
-  console.log("agent", agent);
-  console.log("state", state);
-
   if (state === "routing") {
     return "Thinking...";
   }
@@ -20,17 +16,17 @@ export const getStatusMessage = (status?: AgentStatus | null) => {
     const messages: Record<AgentStatus["agent"], string> = {
       triage: "Thinking...",
       orchestrator: "Coordinating your request...",
-      general: "Working on it...",
-      reports: "Preparing your financial reports...",
-      transactions: "Looking up transactions...",
-      invoices: "Checking your invoices...",
+      general: "Getting information for you...",
+      reports: "Generating your financial reports...",
+      transactions: "Retrieving your transaction history...",
+      invoices: "Checking your invoice status...",
       timeTracking: "Reviewing your time entries...",
-      customers: "Finding customer details...",
-      analytics: "Analyzing your data...",
-      operations: "Processing your request...",
-      research: "Searching for information...",
+      customers: "Looking up customer information...",
+      analytics: "Running business intelligence analysis...",
+      operations: "Accessing your account data...",
+      research: "Researching and analyzing your options...",
     };
-  
+
     return messages[agent];
   }
 
@@ -38,56 +34,69 @@ export const getStatusMessage = (status?: AgentStatus | null) => {
 };
 
 // Generate user-friendly tool messages
-export const getToolMessage = (toolName: string | null) => {
+export const getToolMessage = (
+  toolName: string | null,
+  toolInput?: Record<string, unknown>,
+) => {
   if (!toolName) return null;
+
+  // Dynamic messages based on tool input
+  if (toolName === "webSearch" && toolInput?.query) {
+    const query = toolInput.query as string;
+    // Truncate long queries for better display
+    if (query.length > 40) {
+      return `Searching for "${query.substring(0, 37)}..."`;
+    }
+    return `Searching for "${query}"`;
+  }
 
   const toolMessages: Record<string, string> = {
     // Reports tools
-    revenue: "Analyzing revenue data...",
-    profitLoss: "Calculating profit & loss...",
-    cashFlow: "Analyzing cash flow...",
-    balanceSheet: "Generating balance sheet...",
-    expenses: "Analyzing expenses...",
-    burnRate: "Calculating burn rate...",
-    runway: "Calculating runway...",
-    spending: "Analyzing spending patterns...",
-    taxSummary: "Generating tax summary...",
+    revenue: "Calculating your revenue metrics...",
+    profitLoss: "Computing your profit & loss statement...",
+    cashFlow: "Analyzing your cash flow patterns...",
+    balanceSheet: "Building your balance sheet...",
+    expenses: "Categorizing your expenses...",
+    burnRate: "Computing your monthly burn rate...",
+    runway: "Calculating your cash runway...",
+    spending: "Analyzing your spending trends...",
+    taxSummary: "Preparing your tax summary...",
 
     // Analytics tools
-    businessHealth: "Analyzing business health...",
-    cashFlowForecast: "Forecasting cash flow...",
-    stressTest: "Running stress test scenarios...",
+    businessHealth: "Computing your business health score...",
+    cashFlowForecast: "Projecting your future cash flow...",
+    stressTest: "Running financial stress scenarios...",
 
     // Customer tools
-    getCustomer: "Fetching customer data...",
-    createCustomer: "Creating new customer...",
-    updateCustomer: "Updating customer record...",
+    getCustomer: "Retrieving customer information...",
+    createCustomer: "Setting up new customer profile...",
+    updateCustomer: "Updating customer details...",
     profitabilityAnalysis: "Analyzing customer profitability...",
 
     // Invoice tools
-    listInvoices: "Fetching invoices...",
-    getInvoice: "Fetching invoice details...",
-    createInvoice: "Creating invoice...",
-    updateInvoice: "Updating invoice...",
+    listInvoices: "Retrieving your invoices...",
+    getInvoice: "Loading invoice details...",
+    createInvoice: "Creating your invoice...",
+    updateInvoice: "Updating invoice information...",
 
     // Transaction tools
-    listTransactions: "Fetching transactions...",
-    getTransaction: "Fetching transaction details...",
+    listTransactions: "Retrieving your transactions...",
+    getTransaction: "Loading transaction details...",
 
     // Time tracking tools
-    startTimer: "Starting timer...",
-    stopTimer: "Stopping timer...",
-    getTimeEntries: "Fetching time entries...",
-    createTimeEntry: "Creating time entry...",
+    startTimer: "Starting your timer...",
+    stopTimer: "Stopping your timer...",
+    getTimeEntries: "Retrieving your time entries...",
+    createTimeEntry: "Recording your time...",
     updateTimeEntry: "Updating time entry...",
-    deleteTimeEntry: "Deleting time entry...",
-    getProjects: "Fetching projects...",
+    deleteTimeEntry: "Removing time entry...",
+    getProjects: "Loading your projects...",
 
     // Operations tools
-    listInbox: "Fetching inbox items...",
-    getBalances: "Fetching account balances...",
-    listDocuments: "Fetching documents...",
-    exportData: "Exporting data...",
+    listInbox: "Checking your inbox...",
+    getBalances: "Retrieving your account balances...",
+    listDocuments: "Loading your documents...",
+    exportData: "Preparing your data export...",
 
     // Research tools
     webSearch: "Searching the web...",
@@ -96,9 +105,8 @@ export const getToolMessage = (toolName: string | null) => {
     updateWorkingMemory: "Updating working memory...",
 
     // Handoff tools
-    handoff_to_agent: "Routing to specialist...",
+    handoff_to_agent: "Connecting you with the right specialist...",
   };
 
   return toolMessages[toolName];
 };
-
