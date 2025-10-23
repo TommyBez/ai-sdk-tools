@@ -34,7 +34,7 @@ This package includes all AI SDK tools:
 Import tools directly from the package:
 
 ```typescript
-import { Agent, artifact, cached, useChat, AIDevtools, InMemoryProvider } from 'ai-sdk-tools';
+import { Agent, artifact, cached, useChat, AIDevtools } from 'ai-sdk-tools';
 ```
 
 ### Multi-Agent Orchestration
@@ -42,26 +42,33 @@ import { Agent, artifact, cached, useChat, AIDevtools, InMemoryProvider } from '
 Build intelligent workflows with specialized agents:
 
 ```typescript
-import { Agent } from 'ai-sdk-tools';
+import { Agent, handoff } from 'ai-sdk-tools';
 import { openai } from '@ai-sdk/openai';
 
 const supportAgent = new Agent({
-  model: openai('gpt-4'),
+  model: openai('gpt-4o'),
   name: 'SupportAgent',
   instructions: 'You handle customer support queries.',
 });
 
 const billingAgent = new Agent({
-  model: openai('gpt-4'),
+  model: openai('gpt-4o'),
   name: 'BillingAgent',
   instructions: 'You handle billing and payment issues.',
-  handoff: [supportAgent], // Can hand off back to support
 });
 
-// Support agent can route to billing
-supportAgent.handoff = [billingAgent];
+// Configure bidirectional handoffs
+supportAgent = new Agent({
+  ...supportAgent,
+  handoffs: [handoff(billingAgent)],
+});
 
-const result = await supportAgent.generateText({
+billingAgent = new Agent({
+  ...billingAgent,
+  handoffs: [handoff(supportAgent)],
+});
+
+const result = await supportAgent.generate({
   prompt: 'I need help with my invoice',
 });
 ```
@@ -72,15 +79,14 @@ Manage chat state globally with Zustand:
 
 ```typescript
 import { useChat } from 'ai-sdk-tools';
+import { DefaultChatTransport } from 'ai';
 
 export const useChatHook = useChat({
-  api: '/api/chat',
+  transport: new DefaultChatTransport({ api: '/api/chat' }),
 });
 
-// Access chat state from anywhere
 function ChatComponent() {
   const { messages, input, handleInputChange, handleSubmit } = useChatHook();
-  
   return (
     <form onSubmit={handleSubmit}>
       {messages.map((msg) => (
@@ -104,16 +110,15 @@ import { z } from 'zod';
 const weatherTool = cached(
   tool({
     description: 'Get weather for a location',
-    parameters: z.object({
+    inputSchema: z.object({
       location: z.string(),
     }),
     execute: async ({ location }) => {
-      // Expensive API call
       const response = await fetch(`https://api.weather.com/${location}`);
       return response.json();
     },
   }),
-  { ttl: 3600 } // Cache for 1 hour
+  { ttl: 3600 }
 );
 ```
 
@@ -122,7 +127,7 @@ const weatherTool = cached(
 Stream structured artifacts from AI tools to React components:
 
 ```typescript
-import { artifact, useArtifact } from 'ai-sdk-tools';
+import { artifact } from 'ai-sdk-tools';
 import { z } from 'zod';
 
 const chartArtifact = artifact({
@@ -147,7 +152,8 @@ const chartArtifact = artifact({
 });
 
 // In your React component
-const { data, status } = useArtifact(chartArtifact);
+// import from '/client' for hooks
+// const { data, status } = useArtifact(chartArtifact);
 ```
 
 ### Development Tools
@@ -172,16 +178,21 @@ function App() {
 Add long-term memory to your agents:
 
 ```typescript
-import { Agent, InMemoryProvider } from 'ai-sdk-tools';
+import { Agent } from 'ai-sdk-tools';
 import { openai } from '@ai-sdk/openai';
+import { InMemoryProvider } from '@ai-sdk-tools/memory/providers/in-memory';
 
 const memoryProvider = new InMemoryProvider();
 
 const agent = new Agent({
-  model: openai('gpt-4'),
+  model: openai('gpt-4o'),
   name: 'AssistantAgent',
   instructions: 'You are a helpful assistant with memory.',
-  memory: memoryProvider,
+  memory: {
+    provider: memoryProvider,
+    workingMemory: { enabled: true, scope: 'chat' },
+    history: { enabled: true, limit: 10 },
+  },
 });
 
 // Agent can now remember context across conversations
