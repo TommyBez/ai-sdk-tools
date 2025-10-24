@@ -70,12 +70,21 @@ Automatic routing between agents based on:
 
 ### Context Management & Handoff Filtering
 
-The package now includes OpenAI-style context management with `AgentRunContext` and `HandoffInputFilter` support:
+Use `handoff(targetAgent, { inputFilter, onHandoff })` to control what context flows between agents. The `inputFilter` receives the recent input history plus any new items (including tool results) and returns the data to pass on.
 
 ```typescript
-import { Agent, handoff, removeAllTools, keepLastNMessages } from '@ai-sdk-tools/agents';
+import { Agent, handoff } from '@ai-sdk-tools/agents';
+import { openai } from '@ai-sdk/openai';
 
-// Configure handoffs with context filtering
+// Example: keep only the last 10 messages when handing off
+const keepLast10 = ({ inputHistory, ...rest }: {
+  inputHistory: any[];
+  [key: string]: any;
+}) => ({
+  ...rest,
+  inputHistory: inputHistory.slice(-10),
+});
+
 const specialist = new Agent({
   name: 'Specialist',
   model: openai('gpt-4o'),
@@ -87,17 +96,14 @@ const orchestrator = new Agent({
   model: openai('gpt-4o'),
   instructions: 'Route to specialists...',
   handoffs: [
-    // Remove all tool calls when handing off
     handoff(specialist, {
-      inputFilter: removeAllTools,
+      inputFilter: keepLast10,
       onHandoff: async (runContext) => {
         console.log('Handing off to specialist');
       },
     }),
-    // Keep only last 10 messages for context windowing
-    handoff(anotherSpecialist, {
-      inputFilter: keepLastNMessages(10),
-    }),
+    // Or rely on the built-in default filter by omitting inputFilter
+    handoff(anotherSpecialist),
   ],
 });
 ```
@@ -108,14 +114,22 @@ Agents automatically share context through conversationMessages during handoffs.
 
 ### Working Memory
 
-Working memory automatically loads and provides update capability when enabled:
+Working memory automatically loads and provides an `updateWorkingMemory` tool when enabled:
 
 ```typescript
-const agent = createAgent({
+import { Agent } from '@ai-sdk-tools/agents';
+import { InMemoryProvider } from '@ai-sdk-tools/memory/providers/in-memory';
+import { openai } from '@ai-sdk/openai';
+
+const agent = new Agent({
+  name: 'Assistant',
+  model: openai('gpt-4o'),
+  instructions: 'You are a helpful assistant.',
   memory: {
-    workingMemory: { 
+    provider: new InMemoryProvider(),
+    workingMemory: {
       enabled: true,
-      scope: 'user', // Persists across all chats for this user
+      scope: 'user', // persists across all chats for this user
       template: 'Custom template...'
     }
   }
@@ -127,10 +141,9 @@ When enabled:
 - Agent gets `updateWorkingMemory` tool to update preferences/context
 - Updates persist in storage via the memory provider
 
-### Pre-built Handoff Filters
+### Handoff Filters
 
-- `removeAllTools()` - Remove all tool-related messages
-- `keepLastNMessages(n)` - Keep only the last N messages for context windowing
+Provide an `inputFilter` function to precisely control what the next agent sees (e.g., trim history, summarize data, or forward specific tool results). If omitted, a sensible default filter is applied automatically.
 
 ## Quick Start
 
@@ -519,7 +532,7 @@ stream(options: {
 // Stream as UI messages (Next.js route handler)
 toUIMessageStream(options: {
   message: UIMessage; // New user message - history loaded from storage
-  strategy?: 'auto' | 'manual';
+  strategy?: 'auto' | 'llm';
   maxRounds?: number;
   maxSteps?: number;
   context?: TContext;

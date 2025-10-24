@@ -38,7 +38,7 @@ import { z } from 'zod';
 // Your expensive tool
 const expensiveWeatherTool = tool({
   description: 'Get weather data from API',
-  parameters: z.object({
+  inputSchema: z.object({
     location: z.string(),
   }),
   execute: async ({ location }) => {
@@ -143,7 +143,7 @@ import { cached } from '@ai-sdk-tools/cache';
 
 const burnRateAnalysisTool = tool({
   description: 'Analyze burn rate',
-  parameters: z.object({
+  inputSchema: z.object({
     from: z.string(),
     to: z.string(),
   }),
@@ -177,35 +177,32 @@ For consistent setup across your app, create a configured cache function:
 
 ```typescript
 // src/lib/cache.ts
-import { cached as baseCached, createCacheBackend } from '@ai-sdk-tools/cache';
-import { getContext } from '@/ai/context';
+import Redis from 'redis';
+import { createCached } from '@ai-sdk-tools/cache';
 
-// Create cache backend
-const cacheBackend = createCacheBackend({
-  type: 'redis',
-  redis: {
-    client: Redis.createClient({ url: process.env.REDIS_URL }),
-    keyPrefix: 'my-app:',
+// Prefer createCached for simpler setup
+export const cached = createCached({
+  cache: Redis.createClient({ url: process.env.REDIS_URL }),
+  keyPrefix: 'my-app:',
+  ttl: 30 * 60 * 1000,
+  debug: process.env.NODE_ENV === 'development',
+  cacheKey: () => {
+    const currentUser = getCurrentUser();
+    return `team:${currentUser.teamId}:user:${currentUser.id}`;
   },
 });
 
-// Export configured cache function
-export function cached<T extends Tool>(tool: T, options = {}) {
-  return baseCached(tool, {
-    store: cacheBackend,
-    cacheKey: () => {
-      const currentUser = getCurrentUser();
-      return `team:${currentUser.teamId}:user:${currentUser.id}`;
-    },
-    ttl: 30 * 60 * 1000, // 30 minutes
-    debug: process.env.NODE_ENV === 'development',
-    ...options,
-  });
-}
-
 // Throughout your app
-import { cached } from '@/lib/cache';
-export const myTool = cached(originalTool);
+import { tool } from 'ai';
+import { z } from 'zod';
+
+const expensiveTool = tool({
+  description: 'Analyze burn rate',
+  inputSchema: z.object({ companyId: z.string() }),
+  async execute({ companyId }) { /* ... */ },
+});
+
+export const myTool = cached(expensiveTool);
 ```
 
 ## Streaming Tools with Artifacts
@@ -216,7 +213,7 @@ import { createCached } from '@ai-sdk-tools/cache';
 // Complex streaming tool with artifacts
 const burnRateAnalysis = tool({
   description: 'Generate comprehensive burn rate analysis',
-  parameters: z.object({
+  inputSchema: z.object({
     companyId: z.string(),
     months: z.number(),
   }),
