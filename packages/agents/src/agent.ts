@@ -186,6 +186,9 @@ export class Agent<
     const onStepFinish = (options as Record<string, unknown>).onStepFinish as
       | ((step: unknown) => void | Promise<void>)
       | undefined;
+    const toolChoice = (options as Record<string, unknown>).toolChoice as
+      | string
+      | undefined;
 
     // Resolve instructions dynamically (static string or function)
     const resolvedInstructions =
@@ -261,12 +264,18 @@ export class Agent<
 
     // Build additional options to pass to AI SDK
     // Extract toolChoice as a top-level param (per AI SDK requirements)
-    const { toolChoice, ...otherSettings } = this.modelSettings || {};
+    const { toolChoice: configuredToolChoice, ...otherSettings } =
+      this.modelSettings || {};
+
+    // Allow runtime toolChoice to override configured toolChoice
+    const effectiveToolChoice = toolChoice
+      ? { type: "tool" as const, toolName: toolChoice }
+      : configuredToolChoice;
 
     const additionalOptions: Record<string, unknown> = {
       system: systemPrompt, // Override system prompt per call
       tools: resolvedTools, // Add resolved tools here
-      toolChoice, // Pass toolChoice as top-level param
+      toolChoice: effectiveToolChoice, // Pass toolChoice as top-level param
       ...otherSettings, // Include other model settings
     };
 
@@ -359,11 +368,6 @@ export class Agent<
       headers,
     } = options;
 
-    // Store user message text for later use in onFinish
-    const _userMessageText = extractTextFromMessage(
-      convertToModelMessages([message])[0],
-    );
-
     // Declare variable to store chat metadata (will be loaded in execute block)
     let existingChatForSave: any = null;
 
@@ -382,15 +386,28 @@ export class Agent<
         } else {
           try {
             // The AI SDK provides complete messages with all parts in event.messages
-            const userMsg = event.messages[event.messages.length - 2]; // second to last is user message
-            const assistantMsg = event.messages[event.messages.length - 1]; // last is assistant message
+            const userMsg: any = event.messages[event.messages.length - 2]; // second to last is user message
+            const assistantMsg: any = event.messages[event.messages.length - 1]; // last is assistant message
 
-            logger.debug(`Saving messages with all parts included`);
+            // Filter out file parts from user message - files should never be stored in history
+            // They're only needed during initial LLM processing
+            let userMsgToSave: any = userMsg;
+            if (userMsg && Array.isArray(userMsg.content)) {
+              const filteredContent = userMsg.content.filter(
+                (part: any) => part.type !== "file",
+              );
+              userMsgToSave = {
+                ...userMsg,
+                content: filteredContent.length > 0 ? filteredContent : "",
+              };
+            }
+
+            logger.debug(`Saving messages (files excluded from storage)`);
             await this.saveConversation(
               chatId,
               userId,
-              JSON.stringify(userMsg), // Serialize entire message object
-              JSON.stringify(assistantMsg), // Serialize entire message object
+              JSON.stringify(userMsgToSave),
+              JSON.stringify(assistantMsg),
               existingChatForSave,
             );
           } catch (err) {
@@ -697,6 +714,8 @@ export class Agent<
             }
 
             // Type assertion needed: executionContext and onStepFinish types don't strictly match
+            // Note: toolChoice is NOT passed here - it was only used for routing
+            // Passing it would force the tool to be called on every turn
             const result = currentAgent.stream({
               messages: messagesToSend,
               executionContext: executionContext,
@@ -1195,9 +1214,9 @@ export class Agent<
     const instructions =
       typeof config === "object" && config.instructions
         ? config.instructions
-        : `<task-context>
+        : `<task_context>
 You are a helpful assistant that can generate titles for conversations.
-</task-context>
+</task_context>
 
 <rules>
 Find the most concise title that captures what the user is asking for.
@@ -1205,13 +1224,13 @@ Titles should be at most 30 characters.
 Titles should be formatted in sentence case, with capital letters at the start of each word. Do not provide a period at the end.
 </rules>
 
-<the-ask>
+<task>
 Generate a title for the conversation.
-</the-ask>
+</task>
 
-<output-format>
+<output_format>
 Return only the title.
-</output-format>`;
+</output_format>`;
 
     try {
       // Generate title based only on the user's message
@@ -1374,12 +1393,12 @@ Good suggestions are:
     const extractMemoryIdentifiers = this.extractMemoryIdentifiers.bind(this);
 
     return tool({
-      description: `Save user information (name, role, company, preferences) to persistent memory for future conversations.`,
+      description: `Save user information to persistent memory for future conversations.`,
       inputSchema: z.object({
         content: z
           .string()
           .describe(
-            "Updated working memory content in markdown format. Include user preferences, role, company, and any important facts to remember.",
+            "Updated working memory content in markdown format. Include user preferences and any important facts to remember.",
           ),
       }),
       execute: async ({ content }, options) => {
