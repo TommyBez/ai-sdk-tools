@@ -232,6 +232,7 @@ const result = useSelector(key, fn, deps) // Memoized selectors
 
 // Actions
 const actions = useChatActions()        // All actions object
+const reset = useChatReset()            // Reset chat state to initial values
 
 // Data parts
 const { byType, all } = useDataParts()  // Latest values by data-* type
@@ -255,6 +256,16 @@ const state = useChatStore()            // Read full state
 <Provider initialMessages={messages}>
   <YourApp />
 </Provider>
+```
+
+Need to embed the store into an existing architecture? Use `createChatStoreCreator()` with `zustand/vanilla` to wire chat state into your own provider or persistence layer:
+
+```ts
+import { createStore } from 'zustand/vanilla';
+import { createChatStoreCreator } from '@ai-sdk-tools/store';
+
+const createChatStore = createChatStoreCreator();
+export const chatStore = createStore(createChatStore);
 ```
 
 ### Debug utilities

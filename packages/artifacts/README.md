@@ -103,6 +103,9 @@ export const analyzeBurnRate = tool({
     analysis.progress = 0.25;
     await analysis.update({ stage: 'processing' });
 
+    // Guard against long-running operations
+    analysis.timeout(30_000);
+
     await analysis.complete({
       title: `${company} Analysis`,
       stage: 'complete',
@@ -186,6 +189,16 @@ Returns an object with:
 - `stream(data, writer)` → `StreamingArtifact<T>`
 - `validate(data)` → `T`
 - `isValid(data)` → `boolean`
+
+### `StreamingArtifact`
+Returned from `artifact.stream(data, writer)` and provides:
+
+- `progress` getter/setter – update UI progress bars without touching payload
+- `update(partial)` – merge partial payload updates and increment the version
+- `complete(finalData?)` – mark artifact complete, optionally replacing payload
+- `error(message)` – flag the artifact as errored with a message
+- `cancel()` – convenience helper that marks the artifact as cancelled
+- `timeout(ms)` – auto-trigger `error` if still streaming after `ms`
 
 ### `useArtifact(artifact, callbacks?)`
 React hook for consuming a specific streaming artifact.
