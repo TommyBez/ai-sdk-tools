@@ -57,20 +57,18 @@ const billingAgent = new Agent({
   instructions: 'You handle billing and payment issues.',
 });
 
-// Configure bidirectional handoffs
-supportAgent = new Agent({
-  ...supportAgent,
-  handoffs: [handoff(billingAgent)],
+const router = new Agent({
+  model: openai('gpt-4o-mini'),
+  name: 'Router',
+  instructions: 'Route each message to the best specialist.',
+  handoffs: [handoff(supportAgent), handoff(billingAgent)],
 });
 
-billingAgent = new Agent({
-  ...billingAgent,
-  handoffs: [handoff(supportAgent)],
-});
-
-const result = await supportAgent.generate({
+const result = await router.generate({
   prompt: 'I need help with my invoice',
 });
+
+console.log(result.finalAgent); // => 'BillingAgent'
 ```
 
 ### State Management
@@ -127,32 +125,30 @@ const weatherTool = cached(
 Stream structured artifacts from AI tools to React components:
 
 ```typescript
-import { artifact } from 'ai-sdk-tools';
+import { artifact, getWriter } from 'ai-sdk-tools';
+import { tool } from 'ai';
 import { z } from 'zod';
 
-const chartArtifact = artifact({
-  id: 'chart',
-  description: 'Generate a chart visualization',
-  schema: z.object({
-    data: z.array(z.number()),
-    title: z.string(),
-  }),
-  execute: async ({ data, title }, writer) => {
-    // Stream progressive updates
-    await writer.update({ status: 'processing', progress: 50 });
-    
-    const chartData = processData(data);
-    
-    return {
-      type: 'chart',
-      data: chartData,
-      title,
-    };
+const chartArtifact = artifact('chart', z.object({
+  status: z.enum(['loading', 'complete']).default('loading'),
+  points: z.array(z.number()).default([]),
+}));
+
+export const generateChart = tool({
+  description: 'Build a chart artifact',
+  inputSchema: z.object({ values: z.array(z.number()) }),
+  async execute({ values }, executionOptions) {
+    const writer = getWriter(executionOptions);
+    const stream = chartArtifact.stream({ points: [] }, writer);
+
+    await stream.update({ status: 'loading' });
+    await stream.complete({ status: 'complete', points: values });
+
+    return 'Chart ready';
   },
 });
 
-// In your React component
-// import from '/client' for hooks
+// In React components import hooks from '@ai-sdk-tools/artifacts/client'
 // const { data, status } = useArtifact(chartArtifact);
 ```
 
@@ -197,6 +193,53 @@ const agent = new Agent({
 
 // Agent can now remember context across conversations
 ```
+
+### Streaming Data Parts
+
+Send transient status updates and rate limit information alongside chat responses:
+
+```typescript
+import type { UIMessageStreamWriter } from 'ai';
+import {
+  Agent,
+  writeAgentStatus,
+  writeDataPart,
+  writeRateLimit,
+  writeSuggestions,
+} from 'ai-sdk-tools';
+
+let writerRef: UIMessageStreamWriter | null = null;
+
+const assistant = new Agent({ /* ... */ });
+
+return assistant.toUIMessageStream({
+  message,
+  context,
+  beforeStream: ({ writer }) => {
+    writerRef = writer;
+    writeRateLimit(writer, { limit: 100, remaining: 97, reset: new Date().toISOString() });
+    return true;
+  },
+  onEvent: (event) => {
+    if (!writerRef) return;
+    if (event.type === 'agent-start') {
+      writeAgentStatus(writerRef, { status: 'executing', agent: event.agent });
+    }
+    if (event.type === 'agent-handoff') {
+      writeDataPart(writerRef, 'data-agent-handoff', {
+        from: event.from,
+        to: event.to,
+        reason: event.reason,
+      });
+    }
+    if (event.type === 'agent-complete') {
+      writeSuggestions(writerRef, ['Summarize', 'Create action items']);
+    }
+  },
+});
+```
+
+On the client you can consume these via `@ai-sdk-tools/store` hooks such as `useDataPart('rate-limit')` or `useDataParts()`.
 
 ## Individual Packages
 

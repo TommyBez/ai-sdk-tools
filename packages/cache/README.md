@@ -128,6 +128,7 @@ const cached = createCached({
   keyPrefix?: string;             // Cache key prefix (default: "ai-tools-cache:")
   ttl?: number;                   // Time to live in ms (default: 10min LRU, 30min Redis)
   debug?: boolean;                // Debug logging (default: false)
+  cacheKey?: () => string;        // Append request-specific context to cache keys
   onHit?: (key: string) => void;  // Cache hit callback
   onMiss?: (key: string) => void; // Cache miss callback
 });
@@ -135,7 +136,7 @@ const cached = createCached({
 
 ## Multi-Tenant Apps (Context-Aware Caching)
 
-For apps with user/team context, just add `getContext` to the cache config:
+For apps with user/team context, just add `cacheKey` to the cache config:
 
 ```typescript
 import { cached } from '@ai-sdk-tools/cache';
@@ -274,6 +275,27 @@ const cached = createCached({
 });
 ```
 
+## Conditional & bounded caching
+
+```typescript
+// summaryTool is a standard AI SDK tool created via `tool({ ... })`
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const cachedSummary = cached(summaryTool, {
+  ttl: 10 * 60 * 1000,
+  maxSize: 200,
+  shouldCache: (_params, result) => result?.status === 'ok',
+});
+
+// Skip caching if the tool returns an error payload
+await generateText({
+  model: openai('gpt-4o'),
+  tools: { summary: cachedSummary },
+  messages: [{ role: 'user', content: 'Summarize the latest report' }],
+});
+```
+
 ## Cache Statistics
 
 ```typescript
@@ -316,8 +338,11 @@ Basic caching function with automatic context detection.
 **Parameters:**
 - `tool` - AI SDK tool to cache
 - `options.cacheKey` - Function to generate cache key context
+- `options.keyGenerator` - Custom key serialization logic (default is stable JSON-like stringifier)
 - `options.ttl` - Time to live in milliseconds
 - `options.store` - Cache store backend
+- `options.maxSize` - Max entries for the in-memory store (default: 1000)
+- `options.shouldCache` - Predicate to skip caching specific results
 - `options.debug` - Enable debug logging
 - `options.onHit` - Cache hit callback
 - `options.onMiss` - Cache miss callback

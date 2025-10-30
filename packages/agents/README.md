@@ -141,6 +141,34 @@ When enabled:
 - Agent gets `updateWorkingMemory` tool to update preferences/context
 - Updates persist in storage via the memory provider
 
+### Chat Sessions & Suggestions
+
+Turn on chat session management to persist titles and stream contextual prompts back to the UI:
+
+```typescript
+const assistant = new Agent({
+  name: 'Assistant',
+  model: openai('gpt-4o'),
+  instructions: 'Help users plan their work.',
+  memory: {
+    provider: new InMemoryProvider(),
+    workingMemory: { enabled: true, scope: 'chat' },
+    chats: {
+      enabled: true,
+      generateTitle: true, // writes `data-chat-title` parts when titles change
+      generateSuggestions: {
+        enabled: true,
+        limit: 4,
+        minResponseLength: 120,
+      },
+    },
+  },
+});
+```
+
+- Titles persist through your `MemoryProvider.updateChatTitle` implementation and stream to the client as `data-chat-title` parts.
+- Follow-up prompts are generated with structured output and delivered as transient `data-suggestions` parts via `writeSuggestions`.
+
 ### Handoff Filters
 
 Provide an `inputFilter` function to precisely control what the next agent sees (e.g., trim history, summarize data, or forward specific tool results). If omitted, a sensible default filter is applied automatically.
@@ -269,6 +297,45 @@ export async function POST(req: Request) {
   });
 }
 ```
+
+### UI Data Parts
+
+When streaming, you can emit structured status updates and rate-limit information using the helper functions exported from `@ai-sdk-tools/agents`:
+
+```typescript
+import type { UIMessageStreamWriter } from 'ai';
+import { writeAgentStatus, writeDataPart, writeRateLimit, writeSuggestions } from '@ai-sdk-tools/agents';
+
+let streamWriter: UIMessageStreamWriter | null = null;
+
+await orchestrator.toUIMessageStream({
+  message,
+  context,
+  onEvent: async (event) => {
+    if (!streamWriter) return;
+
+    if (event.type === 'agent-start') {
+      writeAgentStatus(streamWriter, { status: 'executing', agent: event.agent });
+    }
+
+    if (event.type === 'agent-handoff') {
+      writeDataPart(streamWriter, 'data-agent-handoff', {
+        from: event.from,
+        to: event.to,
+        reason: event.reason,
+      });
+    }
+  },
+  beforeStream: ({ writer }) => {
+    streamWriter = writer;
+    writeRateLimit(writer, { limit: 1000, remaining: 997, reset: new Date().toISOString() });
+    writeSuggestions(writer, ['Show revenue', 'Compare cohorts']);
+    return true;
+  },
+});
+```
+
+Data parts are transient by default and integrate with `@ai-sdk-tools/store` hooks such as `useDataPart('rate-limit')`.
 
 ### Tools and Context
 

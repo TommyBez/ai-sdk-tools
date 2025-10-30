@@ -1,6 +1,6 @@
 # @ai-sdk-tools/debug
 
-Shared debug utilities for AI SDK Tools packages using Pino.
+Lightweight debug logger for AI SDK Tools packages with zero-dependency, colorized console output.
 
 ## Installation
 
@@ -29,12 +29,12 @@ logger.error("Failed to load", { error });
 
 ## Features
 
-- **Zero dependencies**: Lightweight with no external dependencies
-- **Zero overhead when disabled**: Logging is completely disabled when `DEBUG_AGENTS` is not set
-- **Colorized output**: Beautiful ANSI colored logs in the terminal
-- **Category-based logging**: Each logger is scoped to a category (e.g., 'AGENT', 'MEMORY')
-- **Works everywhere**: Compatible with Next.js, Node.js, browser, and edge runtimes
-- **Simple & fast**: Direct console output with no worker threads or complex transports
+- **Zero dependencies**: Uses native `console` APIs, no transports or bindings required
+- **Zero overhead when disabled**: Returns no-op functions unless `DEBUG_AGENTS=true`
+- **Colorized output**: Timestamped, ANSI-colored log lines for quick scanning
+- **Category-based logging**: Scope logs per package or feature (e.g., `AGENT`, `MEMORY`, `CACHE`)
+- **Runtime agnostic**: Safe to use in Node.js, Next.js route handlers, and edge environments
+- **Drop-in usage**: Same API whether debug mode is enabled or not
 
 ## API
 
