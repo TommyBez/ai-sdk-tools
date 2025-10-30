@@ -190,7 +190,7 @@ During streaming, the agent will:
 - Emit `data-chat-title` parts when a title is generated (persisted through `updateChatTitle`).
 - Emit `data-suggestions` parts containing contextual next prompts via `writeSuggestions`.
 
-Use the helpers exported from `@ai-sdk-tools/memory`—`formatWorkingMemory`, `formatHistory`, and `getWorkingMemoryInstructions`—to render saved state or build custom prompts.
+Use the helpers exported from `@ai-sdk-tools/memory`—`formatWorkingMemory`, `formatHistory`, and `getWorkingMemoryInstructions`—to render saved state or build custom prompts. For UI prompt suggestions, continue using `writeSuggestions` from `@ai-sdk-tools/agents` as shown in the UI data parts section.
 
 ## Memory Scopes
 
