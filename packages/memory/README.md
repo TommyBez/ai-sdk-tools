@@ -1,235 +1,239 @@
 # @ai-sdk-tools/memory
 
-Persistent memory system for AI agents with built-in providers for development and production.
+Persistent working memory, conversation history, and chat metadata for agents built with the AI SDK. Pick a built-in provider (in-memory, Redis, Upstash, Drizzle) or implement the tiny `MemoryProvider` interface to plug in your own store.
 
-## Features
-
-- **Simple API** - Just 4 methods to implement
-- **Built-in Providers** - InMemory, Drizzle ORM, Redis, and Upstash included
-- **TypeScript-first** - Full type safety
-- **Flexible Scopes** - Chat-level or user-level memory
-- **Conversation History** - Optional message tracking
-- **Database Agnostic** - Works with PostgreSQL, MySQL, and SQLite via Drizzle
+---
 
 ## Installation
 
 ```bash
 npm install @ai-sdk-tools/memory
-# or
-yarn add @ai-sdk-tools/memory
-# or
-pnpm add @ai-sdk-tools/memory
-# or
-bun add @ai-sdk-tools/memory
 ```
 
-### Optional Dependencies
+Optional peer deps (install the ones you need):
 
 ```bash
-# For Drizzle ORM provider (PostgreSQL, MySQL, or SQLite)
+# SQL / Drizzle support
 npm install drizzle-orm
 
-# For Upstash Redis provider (serverless/edge)
-npm install @upstash/redis
-
-# For standard Redis provider (self-hosted/traditional)
-npm install redis
-# or
+# Redis clients
+npm install redis           # or
 npm install ioredis
+
+# Upstash (edge/serverless)
+npm install @upstash/redis
 ```
 
-## Quick Start
+Providers are exposed via subpath exports:
 
-### InMemory Provider (Development)
+```ts
+import { InMemoryProvider } from '@ai-sdk-tools/memory/in-memory';
+import { RedisProvider } from '@ai-sdk-tools/memory/redis';
+import { UpstashProvider } from '@ai-sdk-tools/memory/upstash';
+import { DrizzleProvider } from '@ai-sdk-tools/memory/drizzle';
+```
 
-Perfect for local development - works immediately, no setup needed.
+---
 
-```typescript
-import { InMemoryProvider } from "@ai-sdk-tools/memory";
+## Why use it?
+
+- **Working memory** – persist user preferences/facts beyond the context window and give agents an `updateWorkingMemory` tool with your own template.
+- **Server-side history** – the frontend only sends the newest message while the agent loads the last _n_ messages from storage.
+- **Chat metadata** – auto-generate chat titles and prompt suggestions, list chats per user, delete sessions, etc.
+
+Everything is expressed through a single `MemoryConfig` you pass to an `Agent`.
+
+---
+
+## Quick start with `Agent`
+
+```ts
+import { Agent } from '@ai-sdk-tools/agents';
+import { openai } from '@ai-sdk/openai';
+import { InMemoryProvider } from '@ai-sdk-tools/memory/in-memory';
 
 const memory = new InMemoryProvider();
 
-// Use with agents
-const context = buildAppContext({
-  // ...
+const agent = new Agent({
+  name: 'Planner',
+  model: openai('gpt-4o'),
+  instructions: 'Help plan projects. Update working memory when the user shares preferences.',
   memory: {
     provider: memory,
     workingMemory: {
       enabled: true,
-      scope: "chat",
-    },
-  },
-});
-```
-
-### Drizzle Provider (Production - Any SQL Database)
-
-Works with PostgreSQL, MySQL, and SQLite via Drizzle ORM. Perfect if you already use Drizzle in your project.
-
-```typescript
-import { drizzle } from "drizzle-orm/vercel-postgres";
-import { sql } from "@vercel/postgres";
-import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
-import { DrizzleProvider } from "@ai-sdk-tools/memory";
-
-// Define your schema
-const workingMemory = pgTable("working_memory", {
-  id: text("id").primaryKey(),
-  scope: text("scope").notNull(),
-  chatId: text("chat_id"),
-  userId: text("user_id"),
-  content: text("content").notNull(),
-  updatedAt: timestamp("updated_at").notNull(),
-});
-
-const messages = pgTable("conversation_messages", {
-  id: serial("id").primaryKey(),
-  chatId: text("chat_id").notNull(),
-  userId: text("user_id"),
-  role: text("role").notNull(),
-  content: text("content").notNull(),
-  timestamp: timestamp("timestamp").notNull(),
-});
-
-// Initialize
-const db = drizzle(sql);
-const memory = new DrizzleProvider(db, {
-  workingMemoryTable: workingMemory,
-  messagesTable: messages,
-});
-```
-
-**[Full Drizzle documentation →](./DRIZZLE.md)** - Includes PostgreSQL, MySQL, SQLite/Turso examples
-
-### Redis Provider (Production - Self-Hosted)
-
-Perfect for traditional Redis instances (self-hosted, Redis Cloud, AWS ElastiCache, etc.). Supports both `ioredis` and `redis` npm packages.
-
-**With ioredis:**
-
-```typescript
-import Redis from "ioredis";
-import { RedisProvider } from "@ai-sdk-tools/memory/redis";
-
-const redis = new Redis(process.env.REDIS_URL);
-const memory = new RedisProvider(redis);
-```
-
-**With redis package:**
-
-```typescript
-import { createClient } from "redis";
-import { RedisProvider } from "@ai-sdk-tools/memory/redis";
-
-const redis = createClient({ url: process.env.REDIS_URL });
-await redis.connect();
-const memory = new RedisProvider(redis, {
-  prefix: "my-app:memory:",
-  messageTtl: 60 * 60 * 24 * 30, // Optional: 30 days TTL for messages (default: no expiration)
-});
-```
-
-### Upstash Provider (Production - Serverless)
-
-Perfect for edge and serverless environments. Uses HTTP REST API instead of direct TCP connection.
-
-```typescript
-import { Redis } from "@upstash/redis";
-import { UpstashProvider } from "@ai-sdk-tools/memory/upstash";
-
-const redis = Redis.fromEnv();
-const memory = new UpstashProvider(redis, {
-  prefix: "my-app:memory:",
-  messageTtl: 60 * 60 * 24 * 30, // Optional: 30 days TTL for messages (default: no expiration)
-});
-```
-
-**When to use Redis vs Upstash:**
-- **Redis Provider**: Use when you have a traditional Redis instance (self-hosted, Redis Cloud, AWS ElastiCache, etc.)
-- **Upstash Provider**: Use for serverless/edge environments where HTTP REST API is preferred
-
-## Usage with Agents
-
-```typescript
-import { InMemoryProvider } from "@ai-sdk-tools/memory";
-
-const appContext = buildAppContext({
-  userId: "user-123",
-  // ... other context
-  metadata: {
-    chatId: "chat_abc123",
-    userId: "user-123",
-  },
-  memory: {
-    provider: new InMemoryProvider(),
-    workingMemory: {
-      enabled: true,
-      scope: "chat", // or 'user'
-      template: `# Working Memory
-
-## Key Facts
-- [Important information]
-
-## Preferences
-- [User preferences]
-`,
+      scope: 'user',
+      template: `# Working Memory\n\n## Preferences\n- ...`,
     },
     history: {
       enabled: true,
-      limit: 10,
+      limit: 12,
+    },
+    chats: {
+      enabled: true,
+      generateTitle: true,
+      generateSuggestions: {
+        enabled: true,
+        limit: 4,
+      },
     },
   },
 });
-
-// Agent automatically:
-// 1. Loads working memory into system prompt
-// 2. Injects updateWorkingMemory tool
-// 3. Captures conversation messages
 ```
 
-## Memory Scopes
+In your streaming endpoint pass context with `chatId` / `userId`:
 
-### Chat Scope (Recommended)
+```ts
+return agent.toUIMessageStream({
+  message,
+  context: { chatId, userId },
+});
+```
 
-Memory is tied to a specific conversation.
+The agent will:
+1. Load working memory + history before the first token.
+2. Inject `updateWorkingMemory` if `workingMemory.enabled`.
+3. Save user/assistant messages via `memory.provider.saveMessage`.
+4. Manage chat metadata (titles/suggestions) when `chats.enabled`.
 
-```typescript
-workingMemory: {
-  enabled: true,
-  scope: 'chat',
+---
+
+## Providers
+
+### InMemory (development)
+
+```ts
+import { InMemoryProvider } from '@ai-sdk-tools/memory/in-memory';
+const memory = new InMemoryProvider();
+```
+
+Great for local development and integration tests. Everything stays in process memory.
+
+### Redis (self-hosted / managed)
+
+```ts
+import { createClient } from 'redis';
+import { RedisProvider } from '@ai-sdk-tools/memory/redis';
+
+const redis = createClient({ url: process.env.REDIS_URL });
+await redis.connect();
+
+const memory = new RedisProvider(redis, {
+  prefix: 'my-app:memory:',
+  messageTtl: 60 * 60 * 24 * 30, // optional
+});
+```
+
+Works with `redis`, `ioredis`, or any client exposing the same commands. Perfect for Node services or background workers.
+
+### Upstash (serverless / edge)
+
+```ts
+import { Redis } from '@upstash/redis';
+import { UpstashProvider } from '@ai-sdk-tools/memory/upstash';
+
+const memory = new UpstashProvider(Redis.fromEnv(), {
+  prefix: 'my-app:memory:',
+});
+```
+
+Uses the HTTP API so it runs anywhere (Next.js Edge, Cloudflare Workers, etc.).
+
+### Drizzle (SQL databases)
+
+```ts
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { DrizzleProvider } from '@ai-sdk-tools/memory/drizzle';
+
+const workingMemoryTable = pgTable('working_memory', {
+  id: text('id').primaryKey(),
+  scope: text('scope').notNull(),
+  chatId: text('chat_id'),
+  userId: text('user_id'),
+  content: text('content').notNull(),
+  updatedAt: timestamp('updated_at').notNull(),
+});
+
+const messagesTable = pgTable('conversation_messages', {
+  id: text('id').primaryKey(),
+  chatId: text('chat_id').notNull(),
+  userId: text('user_id'),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  timestamp: timestamp('timestamp').notNull(),
+});
+
+const memory = new DrizzleProvider(db, {
+  workingMemoryTable,
+  messagesTable,
+  chatsTable, // optional: only if you need chat lists/titles
+});
+```
+
+See [`DRIZZLE.md`](./DRIZZLE.md) for schema helpers, migrations, and examples (Postgres, MySQL, SQLite/Turso).
+
+---
+
+## Memory configuration reference
+
+```ts
+interface MemoryConfig {
+  provider: MemoryProvider;
+  workingMemory?: {
+    enabled: boolean;
+    scope: 'chat' | 'user';
+    template?: string;
+  };
+  history?: {
+    enabled: boolean;
+    limit?: number;
+  };
+  chats?: {
+    enabled: boolean;
+    generateTitle?: boolean | GenerateTitleConfig;
+    generateSuggestions?: boolean | GenerateSuggestionsConfig;
+  };
 }
 ```
 
-### User Scope
+- **Working memory scope**  
+  - `chat`: per-conversation (recommended for most assistants).  
+  - `user`: shared across all chats for the same user (preferences/traits).
+- **History.limit** – how many messages to load from storage before streaming starts (default `undefined`, agent falls back to `lastMessages`).
+- **Chats.generateTitle** – customize the model/instructions used to name chats.
+- **Chats.generateSuggestions** – produce post-response suggestions using structured output (`generateObject` under the hood).
 
-Memory persists across all conversations for a user.
+Utility exports:
 
-```typescript
-workingMemory: {
-  enabled: true,
-  scope: 'user',
-}
-```
+- `DEFAULT_TEMPLATE`
+- `formatWorkingMemory(memory)`
+- `formatHistory(messages, limit?)`
 
-## Custom Provider
+Use them if you build your own prompts.
 
-Implement the `MemoryProvider` interface:
+---
 
-```typescript
+## MemoryProvider interface
+
+Implement two required methods (plus optional ones if you need history/chats):
+
+```ts
 import type {
   MemoryProvider,
+  MemoryScope,
   WorkingMemory,
   ConversationMessage,
-  MemoryScope,
-} from "@ai-sdk-tools/memory";
+  ChatSession,
+} from '@ai-sdk-tools/memory';
 
-class MyProvider implements MemoryProvider {
-  async getWorkingMemory(params: {
+class CustomProvider implements MemoryProvider {
+  async getWorkingMemory({ chatId, userId, scope }: {
     chatId?: string;
     userId?: string;
     scope: MemoryScope;
   }): Promise<WorkingMemory | null> {
-    // Your implementation
+    // Fetch from your store
   }
 
   async updateWorkingMemory(params: {
@@ -238,80 +242,45 @@ class MyProvider implements MemoryProvider {
     scope: MemoryScope;
     content: string;
   }): Promise<void> {
-    // Your implementation
+    // Persist Markdown content + timestamp
   }
 
-  // Optional methods
-  async saveMessage(message: ConversationMessage): Promise<void> {
-    // Your implementation
-  }
-
-  async getMessages(params: {
-    chatId: string;
-    limit?: number;
-  }): Promise<ConversationMessage[]> {
-    // Your implementation
-  }
+  async saveMessage?(message: ConversationMessage): Promise<void> {}
+  async getMessages?<T = any>(params: { chatId: string; userId?: string; limit?: number }): Promise<T[]> {}
+  async saveChat?(chat: ChatSession): Promise<void> {}
+  async getChats?(params: { userId?: string; search?: string; limit?: number }): Promise<ChatSession[]> {}
+  async getChat?(chatId: string): Promise<ChatSession | null> {}
+  async updateChatTitle?(chatId: string, title: string): Promise<void> {}
+  async deleteChat?(chatId: string): Promise<void> {}
 }
 ```
 
-## API Reference
+`ConversationMessage.content` can be a string or serialized AI SDK message; providers typically store JSON and parse it before handing it back.
 
-### Types
+---
 
-#### `WorkingMemory`
+## Types
 
-```typescript
-interface WorkingMemory {
-  content: string;
-  updatedAt: Date;
-}
-```
+- `WorkingMemory { content: string; updatedAt: Date }`
+- `ConversationMessage { chatId; userId?; role; content; timestamp }`
+- `ChatSession { chatId; userId?; title?; createdAt; updatedAt; messageCount }`
+- `ChatsConfig`, `GenerateTitleConfig`, `GenerateSuggestionsConfig`
+- `MemoryScope = 'chat' | 'user'`
+- `MemoryConfig`, `MemoryProvider`
 
-#### `MemoryScope`
+All of these ship with TypeScript definitions so you can build providers confidently.
 
-```typescript
-type MemoryScope = "chat" | "user";
-```
+---
 
-#### `ConversationMessage`
+## Tips
 
-```typescript
-interface ConversationMessage {
-  chatId: string;
-  userId?: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: Date;
-}
-```
+- **Context is critical** – your app must supply `chatId` (and optionally `userId`) in the agent context so the provider can segment data correctly.
+- **Combining scopes** – use `scope: 'user'` for preferences + `history.limit` to keep per-chat transcripts short.
+- **TTL strategy** – for Redis/Upstash providers, use `messageTtl` to automatically prune old conversations.
+- **Chat lists** – implement `getChats`/`saveChat` if you want “recent chats” UI without writing additional services.
 
-#### `MemoryProvider`
-
-```typescript
-interface MemoryProvider {
-  getWorkingMemory(params: {
-    chatId?: string;
-    userId?: string;
-    scope: MemoryScope;
-  }): Promise<WorkingMemory | null>;
-
-  updateWorkingMemory(params: {
-    chatId?: string;
-    userId?: string;
-    scope: MemoryScope;
-    content: string;
-  }): Promise<void>;
-
-  saveMessage?(message: ConversationMessage): Promise<void>;
-
-  getMessages?(params: {
-    chatId: string;
-    limit?: number;
-  }): Promise<ConversationMessage[]>;
-}
-```
+---
 
 ## License
 
-MIT
+MIT © [Midday](https://midday.ai)

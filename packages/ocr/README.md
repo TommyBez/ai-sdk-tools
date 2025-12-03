@@ -1,112 +1,173 @@
 # @ai-sdk-tools/ocr
 
-Extract structured data from invoices and receipts using AI SDK with intelligent provider fallback.
+Structured OCR for invoices and receipts with automatic provider fallback, PDF-aware text extraction, and Zod schemas. Pass any image or PDF and get back typed data.
 
-## Features
-
-- **Clean API** - Simple, intuitive interface
-- **Multiple Providers** - Mistral OCR (primary) with Gemini fallback
-- **PDF Support** - Direct PDF processing with fallback to OCR extraction
-- **Quality Validation** - Automatic quality checks with intelligent fallback
-- **Result Merging** - Combines results from multiple attempts for best accuracy
-- **Retry Logic** - Automatic retries with exponential backoff (default: 3 retries)
-- **Multiple Input Formats** - Buffer, base64, file path, URL, or File object
+---
 
 ## Installation
 
 ```bash
 npm install @ai-sdk-tools/ocr
-# or
-bun add @ai-sdk-tools/ocr
 ```
 
-## Quick Start
+---
 
-```typescript
-import { ocr } from '@ai-sdk-tools/ocr';
+## Supported inputs
 
-// Extract invoice data
-const invoice = await ocr(imageBuffer, 'invoice');
+`ocr(input, ...)` accepts:
 
-// Extract receipt data
-const receipt = await ocr(imageUrl, 'receipt');
+- `Buffer`
+- `File` (browser / edge)
+- `string` (http/https URL, file path, base64 string, or `data:` URI)
 
-// With custom schema
-import { invoiceSchema } from '@ai-sdk-tools/ocr';
-const customInvoice = await ocr(imageFile, invoiceSchema);
-```
+Inputs are normalized internally—PDFs remain PDFs so they can be piped through the PDF-specific fallback.
 
-## API
+---
 
-### `ocr(input, typeOrSchema, options?)`
+## Quick start
 
-Extract structured data from a document.
+```ts
+import { ocr, invoiceSchema, type InvoiceData } from '@ai-sdk-tools/ocr';
+import fs from 'node:fs/promises';
 
-**Parameters:**
-- `input` - Buffer, string (base64/file path/URL), or File object
-- `typeOrSchema` - `'invoice' | 'receipt'` or a Zod schema
-- `options` - Optional configuration (see below)
+const pdf = await fs.readFile('./invoices/acme.pdf');
 
-**Returns:** Promise with extracted structured data
-
-**Example:**
-```typescript
-const result = await ocr(imageBuffer, 'invoice', {
+const invoice = await ocr<InvoiceData>(pdf, 'invoice', {
   providers: {
-    mistral: { model: 'mistral-medium-latest' },
-    gemini: { model: 'gemini-1.5-pro' }
+    mistral: { model: 'mistral-small-latest' },
+    gemini: { model: 'gemini-1.5-pro' },
   },
-  retries: 3,
-  timeout: 20000
+  qualityThreshold: {
+    requireCurrency: true,
+    requireTotal: true,
+  },
 });
+
+console.log(invoice.vendor_name, invoice.total_amount);
 ```
 
-## Options
+Need a custom schema? Pass any Zod schema instead of `'invoice' | 'receipt'`:
 
-All options are optional:
+```ts
+const contractSchema = z.object({
+  parties: z.array(z.string()).nullable(),
+  effectiveDate: z.string().nullable(),
+  summary: z.string().nullable(),
+});
 
-```typescript
-{
+const contract = await ocr(pdfBuffer, contractSchema, { timeout: 30_000 });
+```
+
+---
+
+## How the pipeline works
+
+1. **Normalize input** – Detect media type, convert URLs/base64/files into raw data.
+2. **Primary attempt (Mistral)** – Runs the configured Mistral vision model with your schema-specific prompt.
+3. **Quality check** – Ensures required fields (total, currency, vendor, date) are present. You can override the thresholds.
+4. **Fallback (Gemini)** – Gemini runs the same prompt/schema if the first attempt fails or quality is low. When both succeed, their fields are merged via `mergeResults`.
+5. **PDF OCR fallback** – For PDFs only, text is extracted with OCR and re-run through the LLM as a last resort.
+6. **Error reporting** – If every attempt fails, `OCRError` is thrown with detailed `attempts` metadata.
+
+---
+
+## Options reference
+
+```ts
+type OCROptions = {
   providers?: {
-    mistral?: { model?: string, apiKey?: string },
-    gemini?: { model?: string, apiKey?: string }
-  },
-  timeout?: number,
-  retries?: number, // Default: 3
-  qualityThreshold?: QualityThreshold
+    mistral?: { model?: string; apiKey?: string };
+    gemini?: { model?: string; apiKey?: string };
+  };
+  timeout?: number;              // per-attempt timeout (default 20s)
+  retries?: number;              // per-attempt retries w/ backoff (default 3)
+  qualityThreshold?: QualityThreshold;
+};
+
+interface QualityThreshold {
+  requireTotal?: boolean;        // default true (checks total_amount)
+  requireCurrency?: boolean;     // default true
+  requireVendor?: boolean;       // default true
+  requireDate?: boolean;         // default true (invoice_date/due_date/date)
 }
 ```
 
-## Predefined Schemas
+If no provider configuration is provided, defaults are used (`mistral-small-latest` and `gemini-1.5-pro`). API keys fall back to `MISTRAL_API_KEY` / `GEMINI_API_KEY` environment variables.
 
-```typescript
-import { invoiceSchema, receiptSchema } from '@ai-sdk-tools/ocr';
-```
+---
 
-## Error Handling
+## Schemas & types
 
-```typescript
-import { OCRError } from '@ai-sdk-tools/ocr';
+- `invoiceSchema` / `receiptSchema`
+- `type InvoiceData = z.infer<typeof invoiceSchema>` (same for receipts)
+- Bring your own schema to extract any structure—Zod validation guarantees outputs.
+
+---
+
+## Error handling
+
+```ts
+import { ocr, OCRError } from '@ai-sdk-tools/ocr';
 
 try {
-  const result = await ocr(image, 'invoice');
+  const receipt = await ocr(buffer, 'receipt');
 } catch (error) {
   if (error instanceof OCRError) {
-    console.error('OCR failed:', error.message);
-    console.error('Provider attempts:', error.attempts);
+    console.error(error.message);
+    console.table(
+      error.attempts.map((attempt) => ({
+        provider: attempt.provider,
+        success: attempt.success,
+        durationMs: attempt.duration,
+        error: attempt.error?.message,
+      })),
+    );
+  }
+  throw error;
+}
+```
+
+`ProviderAttempt` entries include the provider name, success flag, result/error, and duration so you can log or alert on failures.
+
+---
+
+## Example API route (Next.js)
+
+```ts
+import { NextResponse } from 'next/server';
+import { ocr } from '@ai-sdk-tools/ocr';
+
+export async function POST(req: Request) {
+  const formData = await req.formData();
+  const file = formData.get('file');
+
+  if (!(file instanceof File)) {
+    return NextResponse.json({ error: 'missing file' }, { status: 400 });
+  }
+
+  try {
+    const data = await ocr(file, 'invoice');
+    return NextResponse.json({ data });
+  } catch (error) {
+    if (error instanceof OCRError) {
+      return NextResponse.json({ error: error.message, attempts: error.attempts }, { status: 422 });
+    }
+    throw error;
   }
 }
 ```
 
-## How It Works
+---
 
-1. **Primary Attempt**: Mistral OCR with direct PDF/image processing
-2. **Quality Check**: Validates extracted data meets minimum standards
-3. **Fallback**: If primary fails or quality is poor, tries Gemini OCR
-4. **OCR Fallback**: If both vision models fail, extracts text and uses LLM
-5. **Result Merging**: Combines results from multiple attempts for best accuracy
+## Tips
+
+- **PDF vs image** – Only PDFs trigger the OCR text fallback. Images rely on the vision models.
+- **Custom prompts via schema** – Model performance improves when your schema field names are descriptive.
+- **Quality tuning** – Loosen thresholds if you have sparse receipts or partial documents; tighten them when you need hard guarantees.
+- **Retries** – `retries` applies per provider attempt, using exponential backoff while still respecting `timeout`.
+
+---
 
 ## License
 
-MIT
-
+MIT © [Midday](https://midday.ai)

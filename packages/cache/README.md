@@ -2,337 +2,265 @@
 
 [![npm version](https://badge.fury.io/js/@ai-sdk-tools%2Fcache.svg)](https://badge.fury.io/js/@ai-sdk-tools%2Fcache)
 
-Universal caching wrapper for AI SDK tools. Cache expensive tool executions with zero configuration - works with regular tools, streaming tools, and artifacts.
+Drop-in caching for AI SDK tools (regular or streaming). Wrap any tool with `cached()` and the result is stored in-memory (LRU) by default, or in any backend that implements a tiny `CacheStore` interface.
 
-## Why Cache Tools?
-
-AI agents repeatedly call expensive tools:
-- **Same API calls** across conversation turns (weather, translations)
-- **Heavy calculations** with identical parameters (financial analysis)
-- **Database queries** that don't change (user profiles, company data)
-- **Streaming tools** with complex artifact data (charts, metrics)
-
-Caching provides:
-- **10x faster responses** for repeated requests
-- **80% cost reduction** by avoiding duplicate calls
-- **Smooth agent conversations** with instant cached results
-- **Complete data preservation** - streaming, artifacts, everything
+---
 
 ## Installation
 
 ```bash
 npm install @ai-sdk-tools/cache
-# or
-bun add @ai-sdk-tools/cache
 ```
 
-## Quick Start
+### Peer dependency
 
-### Basic Usage (LRU Cache)
+You already have the AI SDK installed, but for completeness:
 
-```typescript
+```bash
+npm install ai
+```
+
+---
+
+## Why cache tools?
+
+- Avoid repeated API calls (weather lookups, retrieval queries, pricing data).
+- Accelerate multi-step workflows where the same tool is invoked multiple times in a single run.
+- Keep streaming experiences smooth — cached streams replay the exact artifacts/data parts that were produced the first time.
+- Share results across users or scopes by incorporating context into the cache key.
+
+---
+
+## Quick start
+
+```ts
+import { cached } from '@ai-sdk-tools/cache';
 import { tool } from 'ai';
-import { createCached } from '@ai-sdk-tools/cache';
 import { z } from 'zod';
 
-// Your expensive tool
-const expensiveWeatherTool = tool({
-  description: 'Get weather data from API',
-  parameters: z.object({
-    location: z.string(),
-  }),
-  execute: async ({ location }) => {
-    // Expensive API call
-    const response = await fetch(`https://api.weather.com/v1/current?location=${location}`);
-    return response.json();
+const weather = tool({
+  description: 'Fetch current weather',
+  parameters: z.object({ city: z.string() }),
+  async execute({ city }) {
+    return fetchJSON(`https://weather.api/${city}`);
   },
 });
 
-// Create cached function (uses LRU by default)
-const cached = createCached();
+const cachedWeather = cached(weather, {
+  ttl: 10 * 60_000,         // 10 minutes
+  cacheKey: () => 'global', // optional context string
+});
 
-// Wrap with caching - that's it! 🎉
-const weatherTool = cached(expensiveWeatherTool);
-
-// Use normally with AI SDK
-const result = await generateText({
+// Use inside generateText / streamText like any other tool
+await generateText({
   model: openai('gpt-4o'),
-  tools: { weather: weatherTool },
+  tools: { weather: cachedWeather },
   messages: [{ role: 'user', content: 'Weather in NYC?' }],
 });
 ```
 
-**Result**: First call hits the API, subsequent calls return instantly from cache!
+### Share configuration with `createCached`
 
-### Redis/Upstash Cache (Production)
-
-```typescript
-import { Redis } from "@upstash/redis";
-import { createCached } from '@ai-sdk-tools/cache';
-
-// Just pass your Redis client!
-const cached = createCached({
-  cache: Redis.fromEnv(), // That's it!
-  ttl: 30 * 60 * 1000, // 30 minutes
-});
-
-const weatherTool = cached(expensiveWeatherTool);
-```
-
-### Standard Redis
-
-```typescript
-import Redis from "redis";
+```ts
 import { createCached } from '@ai-sdk-tools/cache';
 
 const cached = createCached({
-  cache: Redis.createClient({ url: "redis://localhost:6379" }),
-  keyPrefix: "my-app:",
-  ttl: 30 * 60 * 1000,
-});
-```
-
-### IORedis
-
-```typescript
-import IORedis from "ioredis";
-import { createCached } from '@ai-sdk-tools/cache';
-
-const cached = createCached({
-  cache: new IORedis("redis://localhost:6379"),
-  keyPrefix: "my-app:",
-  ttl: 30 * 60 * 1000,
-});
-```
-
-## Universal Redis Support
-
-Works with **any Redis client** that implements:
-- `get(key: string): Promise<string | null>`
-- `set(key: string, value: string): Promise<void>`
-- `del(key: string): Promise<void>`
-- `setex?(key: string, seconds: number, value: string): Promise<void>` (optional)
-
-Supported clients:
-- ✅ **Upstash Redis** - `@upstash/redis`
-- ✅ **Standard Redis** - `redis`
-- ✅ **IORedis** - `ioredis`
-- ✅ **Redis Clusters** - Any cluster client
-- ✅ **Custom Redis clients** - As long as they implement the interface
-
-## Configuration Options
-
-```typescript
-const cached = createCached({
-  cache?: any;                    // Redis client (optional, defaults to LRU)
-  keyPrefix?: string;             // Cache key prefix (default: "ai-tools-cache:")
-  ttl?: number;                   // Time to live in ms (default: 10min LRU, 30min Redis)
-  debug?: boolean;                // Debug logging (default: false)
-  onHit?: (key: string) => void;  // Cache hit callback
-  onMiss?: (key: string) => void; // Cache miss callback
-});
-```
-
-## Multi-Tenant Apps (Context-Aware Caching)
-
-For apps with user/team context, just add `getContext` to the cache config:
-
-```typescript
-import { cached } from '@ai-sdk-tools/cache';
-// Your app's context system (could be React context, global state, etc.)
-
-const burnRateAnalysisTool = tool({
-  description: 'Analyze burn rate',
-  parameters: z.object({
-    from: z.string(),
-    to: z.string(),
-  }),
-  execute: async ({ from, to }) => {
-    // Your app's way of getting current user/team context
-    const currentUser = getCurrentUser(); // or useUser(), getSession(), etc.
-    
-    return await db.getBurnRate({
-      teamId: currentUser.teamId, // ← Context used here
-      from,
-      to,
-    });
-  },
-});
-
-// Cache with context - that's it!
-export const cachedBurnRateTool = cached(burnRateAnalysisTool, {
+  ttl: 5 * 60_000,
   cacheKey: () => {
-    const currentUser = getCurrentUser();
-    return `team:${currentUser.teamId}:user:${currentUser.id}`;
+    const session = getSession();
+    return `team:${session.teamId}`;
   },
-  ttl: 30 * 60 * 1000, // 30 minutes
+  onHit(key) {
+    metrics.increment('tool.cache.hit', { key });
+  },
 });
+
+export const tools = {
+  docsSearch: cached(docsSearchTool),
+  summarize: cached(summarizeTool),
+};
 ```
 
-**Result**: Cache keys automatically include `teamId` and `userId` - no collisions between users/teams!
+### Streaming tools & artifacts
 
-## Reusable Cache Configuration
+`cached()` automatically records every streaming yield (final chunk + data parts) and replays them when a cache hit occurs.
 
-For consistent setup across your app, create a configured cache function:
+```ts
+const streamReport = cached(
+  tool({
+    description: 'Build a chart',
+    parameters: z.object({ id: z.string() }),
+    async *execute(params, executionOptions) {
+      const writer = getWriter(executionOptions);
+      const artifact = ReportArtifact.stream({ stage: 'loading' }, writer);
 
-```typescript
-// src/lib/cache.ts
-import { cached as baseCached, createCacheBackend } from '@ai-sdk-tools/cache';
-import { getContext } from '@/ai/context';
+      await artifact.update({ stage: 'processing' });
+      yield { text: 'Working…' };
 
-// Create cache backend
-const cacheBackend = createCacheBackend({
-  type: 'redis',
-  redis: {
-    client: Redis.createClient({ url: process.env.REDIS_URL }),
-    keyPrefix: 'my-app:',
-  },
-});
-
-// Export configured cache function
-export function cached<T extends Tool>(tool: T, options = {}) {
-  return baseCached(tool, {
-    store: cacheBackend,
-    cacheKey: () => {
-      const currentUser = getCurrentUser();
-      return `team:${currentUser.teamId}:user:${currentUser.id}`;
+      await artifact.complete({
+        stage: 'complete',
+        sections: buildSections(params.id),
+      });
     },
-    ttl: 30 * 60 * 1000, // 30 minutes
-    debug: process.env.NODE_ENV === 'development',
-    ...options,
-  });
-}
-
-// Throughout your app
-import { cached } from '@/lib/cache';
-export const myTool = cached(originalTool);
-```
-
-## Streaming Tools with Artifacts
-
-```typescript
-import { createCached } from '@ai-sdk-tools/cache';
-
-// Complex streaming tool with artifacts
-const burnRateAnalysis = tool({
-  description: 'Generate comprehensive burn rate analysis',
-  parameters: z.object({
-    companyId: z.string(),
-    months: z.number(),
   }),
-  execute: async function* ({ companyId, months }) {
-    // Create streaming artifact
-    const analysis = burnRateArtifact.stream({
-      stage: "loading",
-      // ... artifact data
-    });
-
-    yield { text: "Starting analysis..." };
-    
-    // Update artifact with charts, metrics
-    await analysis.update({
-      chart: { monthlyData: [...] },
-      metrics: { burnRate: 50000, runway: 18 },
-    });
-    
-    yield { text: "Analysis complete", forceStop: true };
-  },
-});
-
-const cached = createCached({ cache: Redis.fromEnv() });
-const cachedAnalysis = cached(burnRateAnalysis);
-
-// First call: Full streaming + artifact creation
-// Cached calls: Instant artifact restoration + complete result
+);
 ```
 
-## Multiple Tools
+First call captures every artifact update and text chunk. Subsequent calls skip the expensive work and replay the exact same events to the client instantly.
 
-```typescript
+---
+
+## Configuration
+
+`CacheOptions` (usable in both `cached()` and `createCached()`):
+
+| Option | Description |
+| --- | --- |
+| `ttl` | Time-to-live in milliseconds (default `5 minutes` for LRU) |
+| `maxSize` | Maximum entries for the default LRU store (default `1000`) |
+| `store` | Custom store implementing the `CacheStore` interface |
+| `keyGenerator` | `(params, context?) => string` – override serialization |
+| `cacheKey` | `() => string` – supply contextual key fragments (user/team) |
+| `shouldCache` | `(params, result) => boolean` – skip caching for some responses |
+| `onHit` / `onMiss` | Callbacks for analytics/logging |
+| `debug` | Verbose logging to stdout |
+
+The default store is an in-memory LRU map. Pass your own `store` for Redis, DynamoDB, etc.
+
+---
+
+## Implementing a custom store
+
+Any object that satisfies `CacheStore` works:
+
+```ts
+import type { CacheStore, CacheEntry } from '@ai-sdk-tools/cache';
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+
+const redisStore: CacheStore = {
+  async get(key) {
+    const raw = await redis.get<string>(key);
+    return raw ? JSON.parse(raw) as CacheEntry : undefined;
+  },
+  async set(key, entry) {
+    await redis.set(key, JSON.stringify(entry));
+  },
+  async delete(key) {
+    await redis.del(key);
+    return true;
+  },
+  async clear() {
+    // up to you: iterate keys or flush a prefix
+  },
+  async has(key) {
+    return Boolean(await redis.exists(key));
+  },
+  async size() {
+    // approximate implementation
+    return 0;
+  },
+  async keys() {
+    return [];
+  },
+};
+
+const cached = createCached({ store: redisStore, ttl: 15 * 60_000 });
+```
+
+`CacheEntry` is a simple `{ result, timestamp, key }` payload — serialize however you like.
+
+---
+
+## Multi-tenant cache keys
+
+```ts
+const getCacheContext = () => {
+  const session = auth();
+  return `team:${session.teamId}:user:${session.userId}`;
+};
+
+const recommend = cached(recommendationsTool, {
+  cacheKey: getCacheContext,
+  ttl: 30 * 60_000,
+});
+```
+
+`cacheKey()` runs for each call; combine it with `keyGenerator` if you need fine-grained control over serialization.
+
+---
+
+## Working with multiple tools
+
+```ts
 import { cacheTools } from '@ai-sdk-tools/cache';
 
-// Cache multiple tools at once
-const { weather, calculator, database } = cacheTools({
-  weather: weatherTool,
-  calculator: calculatorTool,
-  database: databaseTool,
-}, {
-  ttl: 5 * 60 * 1000, // 5 minutes for all
-});
+const { searchDocs, summarize, translate } = cacheTools(
+  { searchDocs: docsTool, summarize: summarizer, translate: translationTool },
+  {
+    ttl: 5 * 60_000,
+    cacheKey: () => `workspace:${currentWorkspace()}`,
+  },
+);
 ```
 
-## Custom Callbacks
+`cacheTools` applies the same configuration to each tool and returns an object with cached versions.
 
-```typescript
+---
+
+## Stats & maintenance
+
+Every cached tool gains helper methods:
+
+```ts
+const cachedTool = cached(expensiveTool);
+
+cachedTool.getStats();
+// { hits: 4, misses: 1, hitRate: 0.8, size: 3, maxSize: 1000 }
+
+cachedTool.clearCache();           // clear everything
+cachedTool.clearCache('a-key');    // clear just that entry
+await cachedTool.isCached(params); // boolean (async for async stores)
+cachedTool.getCacheKey(params);    // introspect the derived key
+```
+
+Use these to build admin panels or to invalidate cached data when upstream systems change.
+
+---
+
+## Debugging
+
+Enable `debug: true` to log cache behavior:
+
+```ts
 const cached = createCached({
-  cache: Redis.fromEnv(),
-  onHit: (key) => {
-    console.log(`✨ Cache hit: ${key}`);
-    analytics.track('cache_hit', { key });
-  },
-  onMiss: (key) => {
-    console.log(`💫 Cache miss: ${key}`);
-    analytics.track('cache_miss', { key });
-  },
+  debug: process.env.NODE_ENV === 'development',
+  onHit: (key) => console.log('[cache hit]', key),
+  onMiss: (key) => console.log('[cache miss]', key),
 });
 ```
 
-## Cache Statistics
+Streaming caches also log how many chunks/artifacts were replayed so you can verify behavior locally.
 
-```typescript
-const weatherTool = cached(expensiveWeatherTool);
+---
 
-// Get stats
-console.log(weatherTool.getStats());
-// { hits: 15, misses: 3, hitRate: 0.83, size: 18, maxSize: 100 }
-
-// Clear cache
-weatherTool.clearCache(); // Clear all
-weatherTool.clearCache('specific-key'); // Clear specific
-
-// Check if cached
-if (await weatherTool.isCached({ location: 'NYC' })) {
-  console.log('Result is cached!');
-}
-```
-
-## API Reference
-
-### `createCached(options?)`
-
-Creates a cached function with optional Redis client.
-
-**Parameters:**
-- `options.cache` - Redis client (optional, defaults to LRU)
-- `options.keyPrefix` - Cache key prefix
-- `options.ttl` - Time to live in milliseconds
-- `options.debug` - Enable debug logging
-- `options.onHit` - Cache hit callback
-- `options.onMiss` - Cache miss callback
-
-**Returns:** A function that wraps tools with caching
+## API summary
 
 ### `cached(tool, options?)`
+Wrap a single tool immediately. Returns a cached tool instance (with stats + helpers).
 
-Basic caching function with automatic context detection.
+### `createCached(options?)`
+Returns a function you can reuse to wrap many tools with the same defaults.
 
-**Parameters:**
-- `tool` - AI SDK tool to cache
-- `options.cacheKey` - Function to generate cache key context
-- `options.ttl` - Time to live in milliseconds
-- `options.store` - Cache store backend
-- `options.debug` - Enable debug logging
-- `options.onHit` - Cache hit callback
-- `options.onMiss` - Cache miss callback
+### `cacheTools(record, options?)`
+Wrap multiple tools at once and get back an object with cached versions.
 
-### `cacheTools(tools, options?)`
+### Types
+- `CacheOptions`, `CacheStore`, `CacheEntry`, `CacheStats`, `CachedTool<T extends Tool>`.
 
-Cache multiple tools with the same configuration.
-
-## Contributing
-
-Contributions are welcome! Please read our [contributing guide](../../CONTRIBUTING.md) for details.
+---
 
 ## License
 
-MIT © [AI SDK Tools](https://github.com/ai-sdk-tools/ai-sdk-tools)
+MIT © [Midday](https://midday.ai)

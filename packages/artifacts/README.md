@@ -1,349 +1,284 @@
 # @ai-sdk-tools/artifacts
 
-Advanced streaming interfaces for AI applications. Create structured, type-safe artifacts that stream real-time updates from AI tools to React components.
+Stream structured, type-safe payloads from AI tools into React without prop drilling. Define an artifact once, update it incrementally on the server, and consume it anywhere in your UI through hooks powered by `@ai-sdk-tools/store`.
 
-## Features
-
-- **Type-Safe Streaming** - Full TypeScript support with Zod schema validation
-- **Real-time Updates** - Stream partial updates with progress tracking
-- **Clean API** - Minimal boilerplate, maximum flexibility
-- **State Management** - Built on @ai-sdk-tools/store for efficient message handling
-- **Performance Optimized** - Efficient state management and updates
+---
 
 ## Installation
 
 ```bash
 npm install @ai-sdk-tools/artifacts @ai-sdk-tools/store
+# also install the AI SDK + React stack you already use
+npm install ai @ai-sdk/react react react-dom zod
 ```
 
-**Why do you need both packages?**
+Why the store? The store package keeps a single copy of the AI SDK message stream, deduplicates renders, and exposes selectors that let `useArtifact` / `useArtifacts` read the latest data parts without prop drilling.
 
-- `@ai-sdk-tools/artifacts` - Provides the artifact streaming and management APIs
-- `@ai-sdk-tools/store` - Required for message state management and React hooks
+---
 
-The artifacts package uses the store package's `useChatMessages` hook to efficiently extract and track artifact data from AI SDK message streams, ensuring optimal performance and avoiding unnecessary re-renders.
+## What is an artifact?
 
-## Setup
+- A named, typed payload (backed by a Zod schema) that travels through AI SDK `data-*` parts.
+- Includes metadata: `status`, `progress`, `version`, timestamps, and optional error text.
+- Can be updated incrementally (`update`), marked complete (`complete`), cancelled/errored, or even given a `timeout`.
+- Every update is stored in the chat store so you can browse versions or replay history.
 
-### 1. Initialize Chat with Store
+---
 
-```tsx
-import { useChat } from '@ai-sdk-tools/store'; // Drop-in replacement for @ai-sdk/react
-import { DefaultChatTransport } from 'ai';
+## End-to-end example
 
-function ChatComponent() {
-  // Initialize chat (same API as @ai-sdk/react)
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    transport: new DefaultChatTransport({
-      api: '/api/chat'
-    })
-  });
+### 1. Define the artifact schema
 
-  return (
-    <div>
-      {/* Your chat UI */}
-      <ArtifactDisplay /> {/* Artifacts work from any component */}
-    </div>
-  );
-}
-```
-
-### 2. Use Artifacts from Any Component
-
-The `useArtifact` hook automatically connects to the global chat store to extract artifact data from message streams - no prop drilling needed!
-
-## Quick Start
-
-### 1. Define an Artifact
-
-```typescript
+```ts
 import { artifact } from '@ai-sdk-tools/artifacts';
 import { z } from 'zod';
 
-const burnRateArtifact = artifact('burn-rate', z.object({
-  title: z.string(),
-  stage: z.enum(['loading', 'processing', 'complete']).default('loading'),
-  monthlyBurn: z.number(),
-  runway: z.number(),
-  data: z.array(z.object({
-    month: z.string(),
-    burnRate: z.number()
-  })).default([])
-}));
-```
-
-### 2. Create a Tool with Context
-
-```typescript
-// Use direct AI SDK tool format
-const analyzeBurnRate = {
-  description: 'Analyze company burn rate',
-  inputSchema: z.object({
-    company: z.string()
+export const BurnRateArtifact = artifact(
+  'burn-rate',
+  z.object({
+    company: z.string(),
+    stage: z.enum(['collecting', 'processing', 'complete']).default('collecting'),
+    monthlyBurn: z.number().nullable(),
+    runwayMonths: z.number().nullable(),
+    series: z.array(z.object({ month: z.string(), value: z.number() })).default([]),
   }),
-  execute: async ({ company }: { company: string }) => {
-    // Access typed context in tools
-    const context = getContext(); // Fully typed as MyContext
-    
-    console.log('Processing for user:', context.userId);
-    console.log('Theme:', context.config.theme);
-    
-    const analysis = burnRateArtifact.stream({
-      title: `${company} Analysis for ${context.userId}`,
-      stage: 'loading',
-      monthlyBurn: 50000,
-      runway: 12
-    });
-
-    // Stream updates
-    analysis.progress = 0.5;
-    await analysis.update({ stage: 'processing' });
-    
-    // Complete
-    await analysis.complete({
-      title: `${company} Analysis`,
-      stage: 'complete',
-      monthlyBurn: 45000,
-      runway: 14,
-      data: [{ month: '2024-01', burnRate: 50000 }]
-    });
-
-    return 'Analysis complete';
-  }
-};
+);
 ```
 
-### 3. Set Up Route with Context
+### 2. Stream from a tool / route handler
 
-```typescript
-import { createTypedContext, BaseContext } from '@ai-sdk-tools/artifacts';
-import { createUIMessageStream, createUIMessageStreamResponse, streamText } from 'ai';
-import { openai } from '@ai-sdk/openai';
+```ts
+import { tool } from 'ai';
+import { getWriter } from '@ai-sdk-tools/artifacts';
 
-// Define your context type
-interface MyContext extends BaseContext {
-  userId: string;
-  permissions: string[];
-  config: { theme: 'light' | 'dark' };
-}
+export const analyzeBurnRate = tool({
+  description: 'Analyze company burn rate',
+  parameters: z.object({ companyId: z.string() }),
+  async *execute(params, executionOptions) {
+    const writer = getWriter(executionOptions);
+    const artifact = BurnRateArtifact.stream(
+      {
+        company: params.companyId,
+        stage: 'collecting',
+        monthlyBurn: null,
+        runwayMonths: null,
+      },
+      writer,
+    );
 
-// Create typed context helpers
-const { setContext, getContext } = createTypedContext<MyContext>();
+    const transactions = await fetchTransactions(params.companyId);
+    yield { text: 'Crunching ledger…' };
 
-export const POST = async (req: Request) => {
+    await artifact.update({
+      stage: 'processing',
+      series: aggregate(transactions),
+      monthlyBurn: 84200,
+      runwayMonths: 13,
+    });
+
+    await artifact.complete();
+    yield { text: 'Report ready', forceStop: true };
+  },
+});
+```
+
+`getWriter` extracts the `UIMessageStreamWriter` from `executionOptions.experimental_context`. If a writer is missing the helper throws, making it clear that the tool must run inside a streaming request.
+
+### 3. Route handler (Next.js example)
+
+```ts
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
+import { streamText } from 'ai';
+
+export async function POST(req: Request) {
   const { messages } = await req.json();
 
   const stream = createUIMessageStream({
     execute: ({ writer }) => {
-      // Set typed context
-      setContext({
-        writer,
-        userId: req.headers.get('user-id') || 'anonymous',
-        permissions: ['read', 'write'],
-        config: { theme: 'dark' }
-      });
-
       const result = streamText({
-        model: openai('gpt-4'),
+        model: openai('gpt-4o'),
         messages,
-        tools: { analyzeBurnRate }
+        tools: { analyzeBurnRate },
       });
 
       writer.merge(result.toUIMessageStream());
-    }
+    },
   });
 
   return createUIMessageStreamResponse({ stream });
-};
-```
-
-### 4. Consume in React
-
-```tsx
-import { useArtifact } from '@ai-sdk-tools/artifacts/client';
-
-function Analysis() {
-  const { data, status, progress, error } = useArtifact(burnRateArtifact, {
-    onComplete: (data) => console.log('Done!', data),
-    onError: (error) => console.error('Failed:', error)
-  });
-
-  if (!data) return null;
-
-  return (
-    <div>
-      <h2>{data.title}</h2>
-      <p>Stage: {data.stage}</p>
-      <p>Monthly Burn: ${data.monthlyBurn.toLocaleString()}</p>
-      <p>Runway: {data.runway} months</p>
-      {progress && <div>Progress: {progress * 100}%</div>}
-      {data.data.map(item => (
-        <div key={item.month}>
-          {item.month}: ${item.burnRate.toLocaleString()}
-        </div>
-      ))}
-    </div>
-  );
 }
 ```
 
-## API Reference
-
-### `artifact(id, schema)`
-Creates an artifact definition with Zod schema validation.
-
-### `useArtifact(artifact, callbacks?)`
-React hook for consuming a specific streaming artifact.
-
-**Returns:**
-- `data` - Current artifact payload
-- `status` - Current status ('idle' | 'loading' | 'streaming' | 'complete' | 'error')
-- `progress` - Progress value (0-1)
-- `error` - Error message if failed
-- `isActive` - Whether artifact is currently processing
-- `hasData` - Whether artifact has any data
-
-**Callbacks:**
-- `onUpdate(data, prevData)` - Called when data updates
-- `onComplete(data)` - Called when artifact completes
-- `onError(error, data)` - Called on error
-- `onProgress(progress, data)` - Called on progress updates
-- `onStatusChange(status, prevStatus)` - Called when status changes
-
-### `useArtifacts(options?)`
-React hook for listening to all artifacts across all types. Perfect for implementing switch cases to render different artifact types.
-
-**Options:**
-- `onData(artifactType, data)` - Callback fired when any artifact updates
-- `storeId` - Optional store ID (defaults to global store)
-
-**Returns:**
-- `byType` - All artifacts grouped by type: `Record<string, ArtifactData[]>`
-- `latest` - Latest version of each artifact type: `Record<string, ArtifactData>`
-- `artifacts` - All artifacts in chronological order: `ArtifactData[]`
-- `current` - Most recent artifact across all types: `ArtifactData | null`
-
-**Example:**
-```tsx
-import { useArtifacts } from '@ai-sdk-tools/artifacts/client';
-
-function ArtifactRenderer() {
-  const { latest } = useArtifacts({
-    onData: (artifactType, data) => {
-      console.log(`New ${artifactType} artifact:`, data);
-    }
-  });
-
-  return (
-    <div>
-      {Object.entries(latest).map(([type, artifact]) => {
-        switch (type) {
-          case 'burn-rate':
-            return <BurnRateComponent key={type} data={artifact} />;
-          case 'financial-report':
-            return <ReportComponent key={type} data={artifact} />;
-          default:
-            return <GenericComponent key={type} type={type} data={artifact} />;
-        }
-      })}
-    </div>
-  );
-}
-
-// Perfect for Canvas-style switching on current artifact
-function Canvas() {
-  const { current } = useArtifacts();
-
-  switch (current?.type) {
-    case "burn-rate-canvas":
-      return <BurnRateCanvas />;
-    case "revenue-canvas":
-      return <RevenueCanvas />;
-    default:
-      return <DefaultCanvas />;
-  }
-}
-```
-
-
-
-## Advanced Usage
-
-### Combining Both Hooks
-
-You can use both hooks together for different purposes:
+### 4. React consumption (any component)
 
 ```tsx
+'use client';
 import { useArtifact, useArtifacts } from '@ai-sdk-tools/artifacts/client';
+import { useChat } from '@ai-sdk-tools/store';
 
-function DashboardWithAnalysis() {
-  // Listen to all artifacts for notifications/logging
-  useArtifacts({
-    onData: (artifactType, data) => {
-      // Send to analytics
-      analytics.track('artifact_updated', { type: artifactType, status: data.status });
-      
-      // Show notifications
-      if (data.status === 'complete') {
-        toast.success(`${artifactType} analysis complete!`);
-      }
-    }
+export function Chat() {
+  const { messages, input, handleInputChange, handleSubmit } = useChat({
+    api: '/api/chat',
+  });
+  const [{ data, status, progress }] = useArtifact(BurnRateArtifact, {
+    onComplete: (payload) => toast.success(`${payload.company} ready`),
   });
 
-  // Use specific artifact for detailed display
-  const { data: burnRateData, status } = useArtifact(burnRateArtifact);
-
-  // Get latest of all types for overview
-  const { latest } = useArtifacts();
-
   return (
-    <div>
-      {/* Overview of all artifacts */}
-      <div className="overview">
-        {Object.entries(latest).map(([type, artifact]) => (
-          <div key={type} className="artifact-card">
-            <h3>{type}</h3>
-            <span className={`status ${artifact.status}`}>
-              {artifact.status}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Detailed burn rate display */}
-      {burnRateData && (
-        <BurnRateChart data={burnRateData} status={status} />
+    <>
+      <ul>{messages.map((m) => <li key={m.id}>{m.content}</li>)}</ul>
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} />
+      </form>
+      {data && (
+        <aside>
+          <p>{data.company} — {status}</p>
+          {progress !== undefined && <p>{Math.round(progress * 100)}%</p>}
+        </aside>
       )}
-    </div>
+    </>
+  );
+}
+
+export function ArtifactCanvas() {
+  const [{ current, types, activeType }, { setValue }] = useArtifacts({
+    onData(type, latest) {
+      analytics.track('artifact_updated', { type, status: latest.status });
+    },
+  });
+
+  if (!current) return <EmptyState types={types} />;
+  return (
+    <>
+      <Tabs tabs={types} active={activeType} onSelect={setValue} />
+      <Renderer artifact={current} />
+    </>
   );
 }
 ```
 
-### Hook Selection Guide
+`useArtifact` and `useArtifacts` both return `[state, actions]`. Actions let you delete a specific artifact (`actions.delete(id)`), dismiss or restore a type, or control which artifact is considered “active” (useful for dashboards).
 
-**Use `useArtifact`** when:
-- You need to display/work with a specific artifact type
-- You want detailed status, progress, and error handling
-- You need type-safe access to the artifact's payload
+---
 
-**Use `useArtifacts`** when:
-- You want to render different artifact types with switch cases
-- You need to listen to all artifacts for logging/analytics
-- You want to show an overview of all available artifacts
-- You're building a generic artifact renderer
+## Key concepts
+
+### Writer & data parts
+- Artifacts travel through `UIMessageStreamWriter.write({ type: 'data-artifact-<id>', ... })`.
+- `getWriter(executionOptions)` reads the writer from the AI SDK execution context so your tool code stays clean.
+- Every artifact share uses the same store as chat messages, meaning you can hydrate the UI anywhere (no prop drilling or React context gymnastics).
+
+### Streaming lifecycle
+- `artifact(id, schema)` returns helpers:
+  - `create(initial?)` – validate data immediately without streaming.
+  - `stream(initial, writer)` – returns a `StreamingArtifact`.
+  - `validate`, `isValid` – runtime checks when data comes from an arbitrary source.
+- `StreamingArtifact` exposes:
+  - `update(partial)`, `complete(final?)`, `error(message)`, `cancel()`.
+  - `progress` getter/setter (updating it automatically emits a new version).
+  - `timeout(ms)` to auto-fail if no completion occurs.
+
+### Hooks
+- `useArtifact(definition, options?)`
+  - `options.version` lets you inspect historical versions while still receiving callbacks for the latest data.
+  - Returns `{ data, status, progress, error, isActive, hasData, versions }` plus actions `{ delete }`.
+- `useArtifacts(options?)`
+  - Track all artifacts grouped by type, react to new data via `onData`, and control UI state using `setValue`, `dismiss`, `restore`.
+  - Supports `include`/`exclude`, controlled `value`, and externally managed dismissed lists.
+
+### Status & versioning
+
+| Status | Meaning |
+| --- | --- |
+| `idle` | Artifact exists but has no payload yet |
+| `loading` | Initial payload en route |
+| `streaming` | Receiving incremental updates |
+| `complete` | Final payload yielded |
+| `error` | `error(message)` or `cancel()` was called |
+
+Every update increments `version` and stamps `updatedAt`. `useArtifact` keeps a full history so you can build rewind/compare features.
+
+---
+
+## API reference
+
+### `artifact(id: string, schema: ZodSchema<T>)`
+Returns an object with:
+
+| Method | Description |
+| --- | --- |
+| `create(initial?: Partial<T>)` | Produce an `ArtifactData<T>` immediately |
+| `stream(initial: Partial<T>, writer)` | Create a `StreamingArtifact<T>` |
+| `validate(data: unknown)` | Throws if data fails schema |
+| `isValid(data: unknown)` | Type guard |
+
+### `StreamingArtifact<T>`
+
+```ts
+const instance = BurnRateArtifact.stream(initial, writer);
+await instance.update(partial);
+await instance.complete(finalData?);
+await instance.error('Something went wrong');
+instance.progress = 0.6;
+instance.timeout(10_000);
+```
+
+### `getWriter(executionOptions?: { experimental_context?: any })`
+Extracts the `UIMessageStreamWriter` from the AI SDK execution options. Throws if missing.
+
+### Hooks
+
+```ts
+const [state, actions] = useArtifact(BurnRateArtifact, {
+  onUpdate(data) {},
+  onComplete(data) {},
+  onError(message, data) {},
+  onProgress(progress, data) {},
+  onStatusChange(status, prevStatus) {},
+  version: 0, // optional
+});
+
+const [collection, actions] = useArtifacts({
+  include: ['burn-rate', 'pipeline-report'],
+  onData(type, artifact) {},
+  value: activePanel,      // controlled mode
+  onChange: setActivePanel,
+  dismissed, onDismissedChange,
+});
+```
+
+- `UseArtifactReturn<T>` = `{ data, status, progress, error, isActive, hasData, versions, currentIndex }`.
+- `UseArtifactActions` = `{ delete(artifactId) }`.
+- `UseArtifactsReturn` = metadata for all types plus `latestByType`, `current`, `activeType`, etc.
+- `UseArtifactsActions` = `{ setValue, dismiss, restore }`.
+
+### Types & errors
+- `ArtifactData`, `ArtifactStatus`, `ArtifactConfig`, `ArtifactCallbacks`.
+- `ArtifactError` – custom error with `code` for upstream handling.
+
+---
+
+## Tips & advanced usage
+
+- **Notifications & analytics** – subscribe to `useArtifacts({ onData })` in a top-level component to log or toast when artifacts change, even if the rendering happens elsewhere.
+- **Multiple stores** – all hooks accept `storeId`. Instantiate additional chat stores via `@ai-sdk-tools/store` if you need isolated timelines (e.g., multiple assistants on the same page).
+- **Deleting artifacts** – `actions.delete(artifactId)` removes every matching data part from the store (useful when a user closes a panel).
+- **Controlled canvases** – pass `value` and `onChange` to `useArtifacts` to drive tabs, carousels, or multi-canvas dashboards while still receiving automatic auto-open behavior for new types.
+- **Server-only validation** – use `artifact.validate` before persisting or merging artifacts coming from untrusted sources.
+
+---
 
 ## Examples
 
-See the `src/examples/` directory for complete examples including:
-- Burn rate analysis with progress tracking
-- React component integration  
-- Route setup and tool implementation
-- Using `useArtifacts` for multi-type artifact rendering
+Browse the ready-made examples under `packages/artifacts/src/examples/`:
 
-## Contributing
+- `burn-rate-example.ts` – streaming analysis with progress updates
+- `usage-example.tsx` – React consumption with `useArtifact`
+- `use-artifacts-example.tsx` – multi-type canvas using `useArtifacts`
+- `typed-context-example.ts` – combining artifacts with typed execution context
 
-Contributions are welcome! See the [contributing guide](../../CONTRIBUTING.md) for details.
+---
 
 ## License
 
-MIT
+MIT © [Midday](https://midday.ai)

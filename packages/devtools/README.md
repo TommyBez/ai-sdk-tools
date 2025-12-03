@@ -4,218 +4,183 @@
 
 # AI SDK Devtools
 
-A powerful debugging and monitoring tool for AI SDKs that provides real-time insights into AI streaming events, tool calls, and performance metrics.
+Live diagnostics for AI SDK streams. See every SSE event, inspect tool calls, visualize agent handoffs, and (optionally) peek inside `@ai-sdk-tools/store` state.
 
-## What it does
-
-AI SDK Devtools helps you debug and monitor AI applications by:
-
-- **Real-time event monitoring** - Track all AI streaming events as they happen
-- **Tool call debugging** - See tool calls, parameters, results, and execution times
-- **Performance metrics** - Monitor streaming speed (tokens/second, characters/second)
-- **Event filtering** - Filter events by type, tool name, or search queries
-- **Context insights** - Visualize token usage and context window utilization
-- **Stream interception** - Automatically capture events from AI SDK streams
-- **State management** - Optional integration with @ai-sdk-tools/store for state debugging
+---
 
 ## Installation
 
 ```bash
 npm install @ai-sdk-tools/devtools
-```
-
-### Optional Store Integration
-
-For enhanced state debugging capabilities, you can optionally install the store package:
-
-```bash
+# optional (state tab)
 npm install @ai-sdk-tools/store
 ```
 
-The devtools will automatically detect and integrate with the store if available, but it works perfectly fine without it for basic event monitoring.
+The store package enables the “State” tab, but the devtools panel works fine without it.
 
-**Note:** The store package is an optional peer dependency. If you don't install it, the devtools will work normally but without the State tab for debugging Zustand stores.
+---
 
-## Quick Start
-
-### Basic Usage
+## Quick start
 
 ```tsx
+'use client';
 import { AIDevtools } from '@ai-sdk-tools/devtools';
 
-function App() {
+export function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div>
-      {/* Your AI app components */}
-      
-      {/* Add the devtools component - only in development */}
-      {process.env.NODE_ENV === "development" && <AIDevtools />}
-    </div>
+    <>
+      {children}
+      {process.env.NODE_ENV === 'development' && <AIDevtools />}
+    </>
   );
 }
 ```
 
-### With useChat Integration
+That’s it. Whenever a page uses `useChat`, `useChatMessages`, or streams UI events from the AI SDK, the devtools panel listens and renders them in real time.
 
-```tsx
-import { useChat } from 'ai/react';
-import { AIDevtools } from '@ai-sdk-tools/devtools';
-import { DefaultChatTransport } from 'ai';
+---
 
-function ChatComponent() {
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    transport: new DefaultChatTransport({
-      api: '/api/chat'
-    }),
-    ...
-  });
+## What you get
 
-  return (
-    <div>
-      {/* Your chat UI */}
-      {process.env.NODE_ENV === "development" && <AIDevtools />}
-    </div>
-  );
-}
-```
+- **Stream inspector** – watch `message-start`, `text-delta`, `tool-call-*`, `finish` events as they happen.
+- **Tool call details** – duration, args, result payloads, and errors.
+- **Agent flow** – specialized panes for `@ai-sdk-tools/agents` data parts (`agent-status`, `agent-handoff`, rate limits).
+- **Performance metrics** – characters/sec, token deltas, latency between tool steps.
+- **Filtering/search** – filter by event type, tool name, or free-text search.
+- **State tab (optional)** – if `@ai-sdk-tools/store` is present, inspect chat messages, artifacts, and transient data parts.
 
-## Features
+The panel is resizable and can be docked to the bottom, right, or overlay.
 
-### Event Monitoring
-- **Tool calls** - Start, result, and error events
-- **Message streaming** - Text chunks, completions, and deltas
-- **Step tracking** - Multi-step AI processes
-- **Error handling** - Capture and debug errors
-
-### Advanced Filtering
-- Filter by event type (tool calls, text events, errors, etc.)
-- Filter by tool name
-- Search through event data and metadata
-- Quick filter presets
-
-### Performance Metrics
-- Real-time streaming speed (tokens/second)
-- Character streaming rate
-- Context window utilization
-- Event timing and duration
-
-### Visual Interface
-- Resizable panel (drag to resize)
-- Live event indicators
-- Color-coded event types
-- Context circle visualization
+---
 
 ## Configuration
 
 ```tsx
 <AIDevtools
-  enabled={true}
-  maxEvents={1000}
-  modelId="gpt-4o" // For context insights
+  enabled={process.env.NODE_ENV === 'development'}
+  maxEvents={750}
   config={{
-    position: "bottom", // or "right", "overlay"
-    height: 400,
+    position: 'bottom',          // 'bottom' | 'right' | 'overlay'
+    height: 360,
     streamCapture: {
-      enabled: true,
-      endpoint: "/api/chat",
-      autoConnect: true
+      enabled: true,             // patch fetch() to capture SSE
+      endpoints: ['/api/chat'],  // list of endpoints to intercept
+      autoConnect: true,
     },
     throttle: {
       enabled: true,
-      interval: 100, // ms
-      includeTypes: ["text-delta"] // Only throttle high-frequency events
-    }
+      interval: 100,             // ms between batched UI updates
+      includeTypes: ['text-delta'],
+    },
   }}
-  debug={false} // Enable debug logging
+  debug={false}                  // verbose console logging
 />
 ```
 
-## Advanced Usage
+- `maxEvents` – clips history to avoid slow UIs.
+- `streamCapture` – uses the built-in `StreamInterceptor` to patch `fetch()` and listen to SSE streams without any extra code.
+- `throttle` – tame noisy events like text deltas.
 
-### Manual Event Integration
+---
+
+## `useAIDevtools` hook
+
+Want to build your own dashboard or show summaries elsewhere in the UI? Use the hook directly.
 
 ```tsx
 import { useAIDevtools } from '@ai-sdk-tools/devtools';
 
-function MyComponent() {
-  const { 
-    events, 
-    clearEvents, 
-    toggleCapturing 
+function Stats() {
+  const {
+    events,
+    clearEvents,
+    toggleCapturing,
+    filterEvents,
+    getEventStats,
+    getUniqueToolNames,
   } = useAIDevtools({
     maxEvents: 500,
-    onEvent: (event) => {
-      console.log('New event:', event);
-    }
+    onEvent: (event) => analytics.track('ai_event', event),
   });
 
+  const errors = filterEvents(['error']);
+  const stats = getEventStats();
+
   return (
-    <div>
-      <button onClick={clearEvents}>Clear Events</button>
-      <button onClick={toggleCapturing}>Toggle Capture</button>
-      <div>Events: {events.length}</div>
-    </div>
+    <section>
+      <p>Total events: {events.length}</p>
+      <p>Errors: {errors.length}</p>
+      <p>Tools seen: {getUniqueToolNames().join(', ')}</p>
+      <button onClick={toggleCapturing}>Pause</button>
+      <button onClick={clearEvents}>Clear</button>
+    </section>
   );
 }
 ```
 
-### Event Filtering
+The hook powers the panel, so anything the panel can do you can do in your own components.
 
-```tsx
-const { filterEvents, getUniqueToolNames, getEventStats } = useAIDevtools();
+---
 
-// Filter events
-const toolCallEvents = filterEvents(['tool-call-start', 'tool-call-result']);
-const errorEvents = filterEvents(['error']);
-const searchResults = filterEvents(undefined, 'search query');
+## Stream interceptor (standalone)
 
-// Get statistics
-const stats = getEventStats();
-const toolNames = getUniqueToolNames();
+If you want to control when interception happens (e.g., only around specific fetch calls), use `StreamInterceptor` directly:
+
+```ts
+import { StreamInterceptor } from '@ai-sdk-tools/devtools';
+
+const interceptor = new StreamInterceptor({
+  endpoints: ['/api/chat'],
+  enabled: true,
+  onEvent(event) {
+    myStore.add(event);
+  },
+});
+
+interceptor.patch();    // wraps window.fetch
+// ...
+interceptor.unpatch();
 ```
 
-## Event Types
+---
 
-The devtools capture these event types:
+## Devtools config reference
 
-- `tool-call-start` - Tool call initiated
-- `tool-call-result` - Tool call completed successfully
-- `tool-call-error` - Tool call failed
-- `message-start` - Message streaming started
-- `message-chunk` - Message chunk received
-- `message-complete` - Message completed
-- `text-start` - Text streaming started
-- `text-delta` - Text delta received
-- `text-end` - Text streaming ended
-- `finish` - Stream finished
-- `error` - Error occurred
+| Prop | Description |
+| --- | --- |
+| `enabled` | Show/hide the panel |
+| `maxEvents` | How many events to keep before trimming |
+| `modelId` | Optional model label (used in UI badges) |
+| `config.position` | `'bottom' | 'right' | 'overlay'` |
+| `config.height`, `config.width` | Initial size (px) |
+| `config.streamCapture` | `{ enabled, endpoints[], autoConnect }` |
+| `config.throttle` | `{ enabled, interval, includeTypes?, excludeTypes? }` |
+| `debug` | Logs internal devtool actions to `console` |
 
-## Development
+---
 
-### Debug Mode
+## Event types
 
-Enable debug logging to see detailed event information:
+Captured out of the box:
 
-```tsx
-<AIDevtools debug={true} />
-```
+- `message-start`, `message-chunk`, `message-complete`
+- `text-start`, `text-delta`, `text-end`
+- `tool-call-start`, `tool-call-result`, `tool-call-error`
+- `error`, `finish`, `stream-done`
+- Agent-specific: `agent-start`, `agent-step`, `agent-finish`, `agent-handoff`, `agent-complete`, `agent-error`
 
-Or enable globally:
+Anything emitted as an AI SDK data part (e.g., `data-artifact-*`, `data-agent-*`) also shows up under the “Data” panel.
 
-```javascript
-window.__AI_DEVTOOLS_DEBUG = true;
-```
+---
 
 ## Requirements
 
-- React 16.8+
-- AI SDK React package
-- Modern browser with fetch API support
+- React 18+ (Client Component)
+- Runs in any environment where `window.fetch` is available (Next.js, Vite, etc.)
+- Optional `@ai-sdk-tools/store` for the state tab
 
-## Contributing
-
-Contributions are welcome! See the [contributing guide](../../CONTRIBUTING.md) for details.
+---
 
 ## License
 
-MIT
+MIT © [Midday](https://midday.ai)

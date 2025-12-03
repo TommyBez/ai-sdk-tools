@@ -1,238 +1,220 @@
 # ai-sdk-tools
 
-Complete toolkit for building advanced AI applications with the [Vercel AI SDK](https://sdk.vercel.ai/). This package provides everything you need: multi-agent orchestration, state management, caching, artifact streaming, development tools, and persistent memory.
-
-## Installation
+Everything from the AI SDK Tools ecosystem behind a single import. Install one dependency and gain access to agents, artifacts, cache, devtools, memory providers, and the high-performance store — all versioned together and fully typed.
 
 ```bash
 npm install ai-sdk-tools
-```
-
-This installs all tools in a single package with namespaced exports.
-
-### Peer Dependencies
-
-Depending on which features you use, you may need to install:
-
-```bash
+# plus the AI SDK + React stack you already use
 npm install ai @ai-sdk/react react react-dom zod zustand
 ```
 
-## What's Included
+> Prefer a lighter bundle? You can always install `@ai-sdk-tools/<package>` directly. The umbrella package re-exports those modules without adding opinionated glue code.
 
-This package includes all AI SDK tools:
+---
 
-- **`agents`** - Multi-agent orchestration with handoffs and routing
-- **`artifacts`** - Structured artifact streaming for React components  
-- **`cache`** - Universal caching for AI tool executions
-- **`devtools`** - Development and debugging tools
-- **`memory`** - Persistent memory system for AI agents
-- **`store`** - Zustand-based state management for AI applications
+## Included modules
 
-## Usage
+| Module | Summary |
+| --- | --- |
+| `agents` | Multi-agent orchestration with routing, handoffs, memory, and telemetry |
+| `artifacts` | Define & stream typed UI artifacts from tools into React |
+| `cache` | Wrap any AI SDK tool (including streaming) with contextual caching |
+| `devtools` | Real-time inspector for SSE streams, tool calls, agent graphs, and store state |
+| `memory` | Provider-agnostic working memory + conversation history helpers |
+| `store` | Drop-in replacement for `@ai-sdk/react` with heavily optimized Zustand stores |
 
-Import tools directly from the package:
+All exports from the individual packages are available at the root:
 
-```typescript
-import { Agent, artifact, cached, useChat, AIDevtools, InMemoryProvider } from 'ai-sdk-tools';
+```ts
+import {
+  Agent,
+  artifact,
+  cached,
+  useChat,
+  useArtifact,
+  AIDevtools,
+  InMemoryProvider,
+} from 'ai-sdk-tools';
 ```
 
-### Multi-Agent Orchestration
+Tree-shaking works because the package simply re-exports ESM entry points.
 
-Build intelligent workflows with specialized agents:
+---
 
-```typescript
-import { Agent } from 'ai-sdk-tools';
-import { openai } from '@ai-sdk/openai';
+## Quick start
 
-const supportAgent = new Agent({
-  model: openai('gpt-4'),
-  name: 'SupportAgent',
-  instructions: 'You handle customer support queries.',
-});
-
-const billingAgent = new Agent({
-  model: openai('gpt-4'),
-  name: 'BillingAgent',
-  instructions: 'You handle billing and payment issues.',
-  handoff: [supportAgent], // Can hand off back to support
-});
-
-// Support agent can route to billing
-supportAgent.handoff = [billingAgent];
-
-const result = await supportAgent.generateText({
-  prompt: 'I need help with my invoice',
-});
-```
-
-### State Management
-
-Manage chat state globally with Zustand:
-
-```typescript
-import { useChat } from 'ai-sdk-tools';
-
-export const useChatHook = useChat({
-  api: '/api/chat',
-});
-
-// Access chat state from anywhere
-function ChatComponent() {
-  const { messages, input, handleInputChange, handleSubmit } = useChatHook();
-  
-  return (
-    <form onSubmit={handleSubmit}>
-      {messages.map((msg) => (
-        <div key={msg.id}>{msg.content}</div>
-      ))}
-      <input value={input} onChange={handleInputChange} />
-    </form>
-  );
-}
-```
-
-### Tool Caching
-
-Cache expensive tool executions to reduce costs and improve performance:
-
-```typescript
-import { cached } from 'ai-sdk-tools';
+```tsx
+// app/api/chat/route.ts
+import {
+  Agent,
+  handoff,
+  cached,
+  InMemoryProvider,
+} from 'ai-sdk-tools';
 import { tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
 import { z } from 'zod';
 
-const weatherTool = cached(
+const weather = cached(
   tool({
-    description: 'Get weather for a location',
-    parameters: z.object({
-      location: z.string(),
-    }),
-    execute: async ({ location }) => {
-      // Expensive API call
-      const response = await fetch(`https://api.weather.com/${location}`);
-      return response.json();
+    description: 'Fetch weather for a city',
+    parameters: z.object({ city: z.string() }),
+    async execute({ city }) {
+      return fetchJSON(`https://weather.api/${city}`);
     },
   }),
-  { ttl: 3600 } // Cache for 1 hour
+  { ttl: 15 * 60_000 },
 );
-```
 
-### Artifact Streaming
+const specialist = new Agent({
+  name: 'Weather Specialist',
+  model: openai('gpt-4o'),
+  instructions: 'Answer weather questions with metric + imperial units.',
+  tools: { weather },
+});
 
-Stream structured artifacts from AI tools to React components:
-
-```typescript
-import { artifact, useArtifact } from 'ai-sdk-tools';
-import { z } from 'zod';
-
-const chartArtifact = artifact({
-  id: 'chart',
-  description: 'Generate a chart visualization',
-  schema: z.object({
-    data: z.array(z.number()),
-    title: z.string(),
-  }),
-  execute: async ({ data, title }, writer) => {
-    // Stream progressive updates
-    await writer.update({ status: 'processing', progress: 50 });
-    
-    const chartData = processData(data);
-    
-    return {
-      type: 'chart',
-      data: chartData,
-      title,
-    };
+const concierge = new Agent({
+  name: 'Concierge',
+  model: openai('gpt-4o-mini'),
+  instructions: 'Triage all travel questions and route when needed.',
+  handoffs: [specialist],
+  memory: {
+    provider: new InMemoryProvider(),
+    workingMemory: { enabled: true, scope: 'user' },
   },
 });
 
-// In your React component
-const { data, status } = useArtifact(chartArtifact);
+export async function POST(req: Request) {
+  const payload = await req.json();
+  return concierge.toUIMessageStream({
+    message: payload.message,
+    context: { chatId: payload.chatId, userId: payload.userId },
+  });
+}
 ```
 
-### Development Tools
+```tsx
+// app/chat/page.tsx
+'use client';
+import { useChat, useArtifact, AIDevtools, artifact } from 'ai-sdk-tools';
+import { z } from 'zod';
 
-Debug and monitor your AI applications in real-time:
+const Forecast = artifact(
+  'forecast',
+  z.object({
+    city: z.string(),
+    hourly: z.array(z.object({ hour: z.string(), tempC: z.number() })),
+  }),
+);
 
-```typescript
-import { AIDevtools } from 'ai-sdk-tools';
+export default function Chat() {
+  const {
+    messages,
+    input,
+    handleInputChange,
+    handleSubmit,
+  } = useChat({ api: '/api/chat' });
+  const [{ data, status }] = useArtifact(Forecast);
 
-function App() {
   return (
     <>
-      <YourChatComponent />
-      <AIDevtools />
+      <form onSubmit={handleSubmit}>
+        <ul>{messages.map((m) => <li key={m.id}>{m.content}</li>)}</ul>
+        <input value={input} onChange={handleInputChange} />
+      </form>
+
+      {data && (
+        <aside>
+          <h2>{data.city}</h2>
+          <p>Status: {status}</p>
+          <ul>
+            {data.hourly.map((row) => (
+              <li key={row.hour}>{row.hour}: {row.tempC}°C</li>
+            ))}
+          </ul>
+        </aside>
+      )}
+
+      {process.env.NODE_ENV === 'development' && <AIDevtools />}
     </>
   );
 }
 ```
 
-### Persistent Memory
+---
 
-Add long-term memory to your agents:
+## Module cheat sheet
 
-```typescript
-import { Agent, InMemoryProvider } from 'ai-sdk-tools';
-import { openai } from '@ai-sdk/openai';
+### Agents
+- `Agent`, `handoff`, guardrail helpers, streaming writers, etc.
+- Works with `toUIMessageStream` or plain `generate`.
+- Add long-term context via `InMemoryProvider`, `RedisProvider`, `UpstashProvider`, or `DrizzleProvider` from the memory module.
 
-const memoryProvider = new InMemoryProvider();
+### Artifacts
+- `artifact`, `StreamingArtifact`, `useArtifact`, `useArtifacts`.
+- Artifacts are versioned payloads emitted through AI SDK data parts and hydrated in React via the store.
+- Pair with the store module (already included) to subscribe to artifact updates from any component.
 
-const agent = new Agent({
-  model: openai('gpt-4'),
-  name: 'AssistantAgent',
-  instructions: 'You are a helpful assistant with memory.',
-  memory: memoryProvider,
-});
+### Cache
+- `cached(tool, options?)`, `createCached(options)`, `cacheTools`.
+- Handles plain tools **and** streaming tools (replays artifact parts + final text).
+- Bring your own storage by passing `store` (must implement the `CacheStore` interface).
 
-// Agent can now remember context across conversations
-```
+### Devtools
+- `AIDevtools`, `useAIDevtools`, `StreamInterceptor`, parser utilities, and rich type definitions.
+- Captures SSE streams automatically, groups tool calls, throttles noisy events, and inspects `@ai-sdk-tools/store`.
 
-## Individual Packages
+### Memory
+- Type definitions + utility helpers (`formatWorkingMemory`, `formatHistory`, `DEFAULT_TEMPLATE`).
+- Providers live under subpath exports:  
+  `import { InMemoryProvider } from 'ai-sdk-tools/memory/in-memory';`  
+  `import { RedisProvider } from 'ai-sdk-tools/memory/redis';`  
+  `import { UpstashProvider } from 'ai-sdk-tools/memory/upstash';`  
+  `import { DrizzleProvider } from 'ai-sdk-tools/memory/drizzle';`
 
-If you only need specific tools, you can install them individually:
+### Store
+- `useChat`, `Provider`, selectors (`useMessageById`, `useDataPart`, `useVirtualMessages`, …) and the optimized Zustand store factory.
+- Compatible with `@ai-sdk/react` transports; just swap the hook import.
+
+---
+
+## Server + client split
+
+| Where | Typical imports |
+| --- | --- |
+| **Server / Route handlers** | `Agent`, `artifact`, `cached`, memory providers |
+| **Client Components** | `useChat`, `useArtifact`, `useDataPart`, `AIDevtools` |
+
+Because everything comes from one package you can still tree-shake (ESM re-exports). Make sure your bundler is configured for ESM (Next.js, Vite, Bun all work out of the box).
+
+---
+
+## Using individual packages
+
+Need only a subset? Install the specific package:
 
 ```bash
 npm install @ai-sdk-tools/agents
-npm install @ai-sdk-tools/artifacts
-npm install @ai-sdk-tools/cache
-npm install @ai-sdk-tools/devtools
-npm install @ai-sdk-tools/memory
 npm install @ai-sdk-tools/store
 ```
 
-Each package can be used independently with its own API. See individual package documentation for details.
+The APIs are identical — the umbrella package does not wrap or fork anything. Mixing and matching (e.g., `Agent` from `@ai-sdk-tools/agents` with `useChat` from `ai-sdk-tools`) is fully supported.
 
-## Documentation
-
-- [Full Documentation](https://aisdk.tools)
-- [API Reference](https://aisdk.tools/docs)
-- [Examples](https://github.com/midday-ai/ai-sdk-tools/tree/main/apps/example)
-
-## Features
-
-✅ **Multi-agent orchestration** - Coordinate multiple specialized agents  
-✅ **State management** - Global state for AI applications  
-✅ **Universal caching** - Cache any tool execution  
-✅ **Artifact streaming** - Structured real-time updates  
-✅ **Development tools** - Debug and monitor AI apps  
-✅ **Persistent memory** - Long-term agent memory  
-✅ **TypeScript first** - Full type safety throughout  
-✅ **Provider agnostic** - Works with any AI SDK provider  
-✅ **Production ready** - Battle-tested in real applications  
+---
 
 ## Requirements
 
 - Node.js 18+
-- AI SDK v5.0.0 or higher
-- React 18+ (for React-specific features)
+- Vercel AI SDK v5 or newer
+- React 18+ for UI hooks/devtools
+
+## Useful links
+
+- [Examples](https://github.com/midday-ai/ai-sdk-tools/tree/main/apps/example)
+- [Issues](https://github.com/midday-ai/ai-sdk-tools/issues)
+- [Discussions](https://github.com/midday-ai/ai-sdk-tools/discussions)
 
 ## License
 
 MIT © [Midday](https://midday.ai)
-
-## Links
-
-- [GitHub](https://github.com/midday-ai/ai-sdk-tools)
-- [Issues](https://github.com/midday-ai/ai-sdk-tools/issues)
-- [Discussions](https://github.com/midday-ai/ai-sdk-tools/discussions)
 
