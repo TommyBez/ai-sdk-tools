@@ -1323,6 +1323,650 @@ interface MyMessage extends UIMessage {
 
 ---
 
+## Deep Dive: initialMessages and sendMessage Interaction
+
+This section provides an in-depth exploration of how `initialMessages` flows through the system and interacts with the `sendMessage` function from the `useChat` hook.
+
+### The Complete Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SERVER SIDE                                     │
+│                                                                              │
+│  1. Page Component (SSR)                                                    │
+│     └── loadChatHistory(chatId) → fetches messages from database/memory     │
+│         └── returns UIMessage[]                                             │
+│                                                                              │
+│  2. initialMessages passed to Provider                                       │
+│     └── <Provider initialMessages={initialMessages}>                         │
+└────────────────────────────────────────────────────────────────┬────────────┘
+                                                                 │
+                                                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT SIDE                                     │
+│                                                                              │
+│  3. Store Creation (runs once on mount)                                      │
+│     └── createChatStore(initialMessages)                                     │
+│         ├── messages: initialMessages                                        │
+│         ├── _throttledMessages: [...initialMessages]                         │
+│         └── _messageIndex.update(initialMessages)                            │
+│                                                                              │
+│  4. useChat Hook Initialization                                              │
+│     └── useOriginalChat() → AI SDK's useChat                                │
+│         └── starts with empty messages (no initialMessages passed)          │
+│                                                                              │
+│  5. Sync Effect (useChat → Store)                                            │
+│     └── Detects: store has messages, chatHelpers has none                   │
+│     └── SKIPS syncing messages (hydration protection)                        │
+│     └── Only syncs: id, status, error, functions                            │
+│                                                                              │
+│  6. Component Renders                                                        │
+│     └── useChat returns store.messages (not chatHelpers.messages)           │
+│     └── UI shows initialMessages immediately                                 │
+│                                                                              │
+│  7. User calls sendMessage()                                                 │
+│     └── chatHelpers.sendMessage() → AI SDK processes                        │
+│     └── AI SDK updates chatHelpers.messages                                 │
+│     └── Sync effect runs: syncs new messages to store                        │
+│     └── Store updates → Components re-render                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step-by-Step: initialMessages Flow
+
+#### Step 1: Server-Side Data Loading
+
+In a Next.js App Router setup, messages are loaded server-side:
+
+```typescript
+// app/[[...chatId]]/page.tsx
+import { loadChatHistory } from "@/lib/data";
+
+export default async function Page({ params }: Props) {
+  const { chatId } = await params;
+  const currentChatId = chatId?.at(0);
+
+  // Server-side: Load messages from database/memory
+  const initialMessages = currentChatId
+    ? await loadChatHistory(currentChatId)
+    : [];
+
+  return (
+    <CustomStoreProvider
+      chatKey={currentChatId || "home"}
+      initialMessages={initialMessages}
+    >
+      <ChatInterface />
+    </CustomStoreProvider>
+  );
+}
+```
+
+The data loading function typically fetches from a persistence layer:
+
+```typescript
+// lib/data.ts
+export async function loadChatHistory(chatId: string): Promise<UIMessage[]> {
+  try {
+    const messages = await memoryProvider.getMessages({
+      chatId,
+      limit: 50,
+    });
+    return messages || [];
+  } catch (error) {
+    console.error("Error loading chat history:", error);
+    return [];
+  }
+}
+```
+
+#### Step 2: Provider Receives initialMessages
+
+The Provider creates the store with initial messages:
+
+```typescript
+// Provider implementation
+export function Provider<TMessage extends UIMessage = UIMessage>({
+  children,
+  initialMessages,
+  store,
+}: {
+  children: React.ReactNode;
+  initialMessages?: TMessage[];
+  store?: CompatibleChatStoreApi<TMessage>;
+}) {
+  const storeRef = useRef<CompatibleChatStoreApi<TMessage> | null>(null);
+
+  // Store is created ONCE on first render
+  if (storeRef.current === null) {
+    storeRef.current =
+      store || createChatStore<TMessage>(initialMessages || []);
+  }
+
+  return React.createElement(
+    ChatStoreContext.Provider,
+    { value: storeRef.current },
+    children,
+  );
+}
+```
+
+**Important**: The store reference is created once and never recreated, even if `initialMessages` prop changes. This is intentional for performance.
+
+#### Step 3: Store Initialization
+
+When `createChatStore` is called, it initializes all internal state:
+
+```typescript
+export function createChatStoreCreator<TMessage extends UIMessage>(
+  initialMessages: TMessage[] = [],
+): StateCreator<StoreState<TMessage>, [], []> {
+  const messageIndex = new MessageIndex<TMessage>();
+
+  // Index is pre-populated for O(1) lookups
+  messageIndex.update(initialMessages);
+
+  return (set, get) => {
+    return {
+      id: undefined,
+      messages: initialMessages,              // Direct reference to initial messages
+      status: "ready" as const,
+      error: undefined,
+      _throttledMessages: [...initialMessages], // Shallow copy for throttled updates
+      _messageIndex: messageIndex,              // Pre-built index
+      _memoizedSelectors: new Map(),
+      _transientDataParts: new Map(),
+      // ... actions and helpers
+    };
+  };
+}
+```
+
+**Key Points**:
+- `messages` holds the direct reference to `initialMessages`
+- `_throttledMessages` is a shallow copy (for independent throttling)
+- `_messageIndex` is pre-built for immediate O(1) lookups
+- Status starts as `"ready"` (not streaming)
+
+#### Step 4: useChat Hook Synchronization
+
+The enhanced `useChat` hook manages bidirectional sync:
+
+```typescript
+export function useChat<TMessage extends UIMessage = UIMessage>(
+  options: UseChatOptionsWithPerformance<TMessage> = {},
+): UseChatHelpers<TMessage> {
+  const { store: customStore, enableBatching = true, ...originalOptions } = options;
+
+  const contextStore = useChatStoreApi<TMessage>();
+  const store = customStore || contextStore;
+
+  // AI SDK's original useChat - starts with EMPTY messages
+  const chatHelpers = useOriginalChat<TMessage>({
+    ...originalOptions,
+    onData: wrappedOnData,
+  });
+
+  // Sync effect - runs when chatHelpers state changes
+  useEffect(() => {
+    const currentStoreState = (store as any).getState?.() || { messages: [] };
+
+    // CRITICAL: Hydration protection
+    // If store has messages but chatHelpers doesn't, DON'T overwrite store
+    const shouldSyncMessages = !(
+      currentStoreState.messages?.length > 0 &&
+      chatHelpers.messages.length === 0
+    );
+
+    const stateData: any = {
+      id: chatHelpers.id,
+      error: chatHelpers.error,
+      status: chatHelpers.status,
+    };
+
+    // Only sync messages if appropriate
+    if (shouldSyncMessages) {
+      stateData.messages = chatHelpers.messages;
+    }
+
+    // Always sync functions (sendMessage, regenerate, etc.)
+    const functionsData = {
+      sendMessage: chatHelpers.sendMessage,
+      regenerate: chatHelpers.regenerate,
+      stop: chatHelpers.stop,
+      resumeStream: chatHelpers.resumeStream,
+      addToolResult: chatHelpers.addToolResult,
+      setMessages: chatHelpers.setMessages,
+      clearError: chatHelpers.clearError,
+    };
+
+    syncState({ ...stateData, ...functionsData });
+  }, [/* dependencies */]);
+
+  // CRITICAL: Return store messages, not chatHelpers messages
+  const storeMessages = useStore(
+    store as any,
+    (state: any) => state.messages as TMessage[],
+  );
+
+  return {
+    ...chatHelpers,
+    messages: storeMessages || chatHelpers.messages,
+  };
+}
+```
+
+**The Hydration Protection Logic**:
+
+```typescript
+const shouldSyncMessages = !(
+  currentStoreState.messages?.length > 0 &&  // Store has messages (from SSR)
+  chatHelpers.messages.length === 0           // AI SDK has none (just initialized)
+);
+```
+
+This prevents the scenario where:
+1. Server renders page with 10 messages in store
+2. Client hydrates, AI SDK's useChat starts with 0 messages
+3. Without protection: store would be cleared to 0 messages
+4. With protection: store keeps its 10 messages
+
+### Step-by-Step: sendMessage Flow
+
+When a user sends a message, here's the complete flow:
+
+#### Step 1: Component Calls sendMessage
+
+```typescript
+// In a component
+const { sendMessage, status } = useChat({
+  id: chatId,
+  transport: new DefaultChatTransport({ api: "/api/chat" }),
+});
+
+const handleSubmit = (message: ChatInputMessage) => {
+  sendMessage({
+    text: message.text,
+    files: message.files,
+    metadata: { agentChoice: message.metadata?.agentChoice },
+  });
+};
+```
+
+#### Step 2: sendMessage Execution Path
+
+```
+sendMessage() called
+    │
+    ▼
+Store's sendMessage (synced from chatHelpers)
+    │
+    ▼
+AI SDK's chatHelpers.sendMessage()
+    │
+    ├── Creates user message with generated ID
+    ├── Adds to internal messages array
+    ├── Sets status to "submitted"
+    ├── Initiates API request via transport
+    │
+    ▼
+API streaming begins
+    │
+    ├── Status changes to "streaming"
+    ├── Assistant message created (empty)
+    ├── Content streams in, message updated
+    │
+    ▼
+Sync effect triggers (chatHelpers state changed)
+    │
+    ├── shouldSyncMessages = true (both have messages now)
+    ├── Syncs messages to store
+    ├── Store's setMessages() called
+    │
+    ▼
+Store updates
+    │
+    ├── messages array updated
+    ├── _memoizedSelectors cleared
+    ├── During streaming: immediate _throttledMessages update (high priority)
+    ├── Not streaming: throttled update (~16ms)
+    │
+    ▼
+_messageIndex rebuilt
+    │
+    ▼
+Components re-render via Zustand subscriptions
+```
+
+#### Step 3: Message Flow During Streaming
+
+During streaming, the store handles high-frequency updates efficiently:
+
+```typescript
+setMessages: (messages) => {
+  markLastAction("chat:setMessages");
+  batchUpdates(() => {
+    const currentState = get();
+    if (messages === currentState.messages) return;  // Skip if same reference
+
+    set({
+      messages: messages,
+      _memoizedSelectors: new Map(),  // Clear computed cache
+    });
+
+    // STREAMING OPTIMIZATION
+    if (currentState.status === "streaming") {
+      // Immediate update for smooth text rendering
+      batchUpdates(() => {
+        const state = get();
+        const newThrottledMessages = [...state.messages];
+        state._messageIndex.update(newThrottledMessages);
+        set({ _throttledMessages: newThrottledMessages });
+      }, 1);  // Priority 1 = high priority
+    } else {
+      // Normal: use throttled updater (~60fps)
+      throttledMessagesUpdater?.();
+    }
+  });
+}
+```
+
+### Real-World Example: Complete Chat Implementation
+
+Here's a complete example showing initialMessages and sendMessage working together:
+
+```typescript
+// 1. Server Component - Load and provide initial messages
+// app/chat/[chatId]/page.tsx
+import { Provider } from "@ai-sdk-tools/store";
+
+export default async function ChatPage({ params }: { params: { chatId: string } }) {
+  // Server-side data fetching
+  const initialMessages = await db.messages.findMany({
+    where: { chatId: params.chatId },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  return (
+    <Provider initialMessages={initialMessages}>
+      <ChatContainer chatId={params.chatId} />
+    </Provider>
+  );
+}
+
+// 2. Client Component - Use chat with sendMessage
+// components/chat-container.tsx
+"use client";
+
+import { useChat, useChatMessages, useChatStatus } from "@ai-sdk-tools/store";
+import { DefaultChatTransport } from "ai";
+
+export function ChatContainer({ chatId }: { chatId: string }) {
+  const [input, setInput] = useState("");
+  
+  // useChat returns store messages (including initialMessages)
+  const { sendMessage, stop } = useChat({
+    id: chatId,
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      prepareSendMessagesRequest({ messages, id }) {
+        return {
+          body: {
+            messages,
+            chatId: id,
+          },
+        };
+      },
+    }),
+  });
+
+  // These hooks also work - they read from the same store
+  const messages = useChatMessages();
+  const status = useChatStatus();
+
+  const handleSend = () => {
+    if (!input.trim()) return;
+    
+    sendMessage({
+      text: input,
+      metadata: { timestamp: Date.now() },
+    });
+    
+    setInput("");
+  };
+
+  return (
+    <div>
+      {/* Messages include initialMessages + new messages */}
+      <div className="messages">
+        {messages.map((msg) => (
+          <MessageBubble key={msg.id} message={msg} />
+        ))}
+      </div>
+      
+      <div className="input-area">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+          disabled={status === 'streaming'}
+        />
+        <button onClick={status === 'streaming' ? stop : handleSend}>
+          {status === 'streaming' ? 'Stop' : 'Send'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 3. Separate component accessing same messages (no prop drilling!)
+// components/message-count.tsx
+"use client";
+
+import { useMessageCount } from "@ai-sdk-tools/store";
+
+export function MessageCount() {
+  // This includes initialMessages count
+  const count = useMessageCount();
+  return <span>{count} messages</span>;
+}
+```
+
+### Timing Diagram: Hydration with initialMessages
+
+```
+Timeline: SSR → Hydration → User Interaction
+
+SERVER (SSR):
+────────────────────────────────────────────────────────────────
+t0: Page request received
+t1: loadChatHistory() fetches 5 messages from database
+t2: Provider created with initialMessages=[msg1,msg2,msg3,msg4,msg5]
+t3: HTML rendered with 5 messages
+t4: HTML sent to client
+
+CLIENT (Hydration):
+────────────────────────────────────────────────────────────────
+t5: HTML received, initial paint shows 5 messages
+t6: React hydration begins
+t7: Provider mounts
+    - storeRef.current = createChatStore([msg1,msg2,msg3,msg4,msg5])
+    - Store state: { messages: [5 messages], status: 'ready' }
+t8: ChatContainer mounts
+t9: useChat() called
+    - useOriginalChat() initializes with messages: []
+    - chatHelpers = { messages: [], status: 'ready', ... }
+t10: useEffect sync runs
+    - Store has 5 messages, chatHelpers has 0
+    - shouldSyncMessages = false (hydration protection!)
+    - Only syncs: id, status, error, functions
+    - Store keeps its 5 messages
+t11: useChat returns { messages: [5 messages from store], sendMessage, ... }
+t12: Component renders with 5 messages ✓
+
+USER INTERACTION:
+────────────────────────────────────────────────────────────────
+t13: User types "Hello" and clicks send
+t14: sendMessage({ text: "Hello" }) called
+t15: AI SDK processes:
+    - Creates user message (msg6)
+    - chatHelpers.messages = [msg6]  // AI SDK only knows about new message
+    - Sends to API
+t16: Sync effect runs
+    - Store has 5 messages, chatHelpers has 1
+    - shouldSyncMessages = true (both have messages)
+    - Syncs chatHelpers.messages to store
+    - BUT WAIT! This would clear our history!
+
+PROBLEM SCENARIO (if naive sync):
+────────────────────────────────────────────────────────────────
+    - Store would become: [msg6] (lost msg1-5!)
+
+ACTUAL BEHAVIOR (AI SDK handles this):
+────────────────────────────────────────────────────────────────
+    - AI SDK's sendMessage preserves existing messages in its internal state
+    - When transport sends request, it includes all messages for context
+    - Response streaming updates messages, which then sync to store
+    - Store ends up with: [msg1,msg2,msg3,msg4,msg5,msg6,msg7(assistant)]
+```
+
+### Key Insight: AI SDK's Internal Message Management
+
+The AI SDK's `useChat` hook manages messages internally. When you call `sendMessage`, it:
+
+1. **Preserves existing messages** in its internal state
+2. **Appends the new user message**
+3. **Sends all messages to the API** (for context)
+4. **Receives and appends the assistant response**
+
+The store sync ensures these updates propagate to the Zustand store, which then triggers React re-renders.
+
+### Edge Cases and Solutions
+
+#### Edge Case 1: Changing Chat Sessions
+
+When navigating between chats, you need to reset the store:
+
+```typescript
+// Using chatKey to force re-mount
+<Provider key={chatId} initialMessages={messages}>
+  <ChatInterface />
+</Provider>
+
+// Or using the reset action
+const { reset, setNewChat } = useChatActions();
+
+const switchChat = async (newChatId: string) => {
+  const newMessages = await loadChatHistory(newChatId);
+  setNewChat(newChatId, newMessages);
+};
+```
+
+#### Edge Case 2: Real-time Message Updates
+
+If messages can be added externally (e.g., WebSocket), use store actions directly:
+
+```typescript
+const { pushMessage } = useChatActions();
+
+useEffect(() => {
+  const ws = new WebSocket('/realtime');
+  ws.onmessage = (event) => {
+    const newMessage = JSON.parse(event.data);
+    pushMessage(newMessage);  // Directly updates store
+  };
+  return () => ws.close();
+}, [pushMessage]);
+```
+
+#### Edge Case 3: Optimistic Updates
+
+For instant UI feedback before server response:
+
+```typescript
+const { pushMessage, popMessage, sendMessage } = useChatActions();
+
+const sendOptimistic = async (text: string) => {
+  // 1. Add optimistic user message
+  const optimisticMsg = {
+    id: `temp-${Date.now()}`,
+    role: 'user' as const,
+    content: text,
+    parts: [{ type: 'text' as const, text }],
+  };
+  pushMessage(optimisticMsg);
+
+  try {
+    // 2. Send actual message (will add real message + response)
+    await sendMessage({ text });
+    // 3. Remove optimistic message (real one from sendMessage takes over)
+    popMessage();  // Remove the optimistic one
+  } catch (error) {
+    // 4. On error, remove optimistic and show error
+    popMessage();
+    throw error;
+  }
+};
+```
+
+### Performance Characteristics
+
+| Scenario | Time Complexity | Notes |
+|----------|-----------------|-------|
+| Initial render with N messages | O(N) | Index building |
+| sendMessage (user action) | O(1) | Append to array |
+| Message lookup by ID | O(1) | Hash map lookup |
+| Sync effect (per message update) | O(N) | Array copy + index rebuild |
+| Throttled UI update | O(N) | Shallow copy of messages |
+
+### Common Mistakes to Avoid
+
+#### ❌ Passing initialMessages to useChat
+
+```typescript
+// WRONG - AI SDK's useChat doesn't use initialMessages the same way
+const { messages } = useChat({
+  initialMessages: serverMessages,  // This won't work as expected
+});
+```
+
+#### ✅ Pass initialMessages to Provider
+
+```typescript
+// CORRECT - Provider initializes the store
+<Provider initialMessages={serverMessages}>
+  <Component />
+</Provider>
+
+// Then useChat reads from the store
+const { messages } = useChat({ /* no initialMessages here */ });
+```
+
+#### ❌ Creating store on every render
+
+```typescript
+// WRONG - Creates new store every render, loses state
+function BadProvider({ children, initialMessages }) {
+  const store = createChatStore(initialMessages);  // New store each render!
+  return <Provider store={store}>{children}</Provider>;
+}
+```
+
+#### ✅ Use ref to persist store
+
+```typescript
+// CORRECT - Store persists across renders
+function GoodProvider({ children, initialMessages }) {
+  const storeRef = useRef(null);
+  if (storeRef.current === null) {
+    storeRef.current = createChatStore(initialMessages);
+  }
+  return <Provider store={storeRef.current}>{children}</Provider>;
+}
+```
+
+---
+
 ## API Reference Summary
 
 ### Exports
